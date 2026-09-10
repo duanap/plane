@@ -34,5 +34,63 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Smoke built server
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/server.mjs >/tmp/plane-server.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/health >/tmp/plane-health.json; then
+              ready=1
+              break
+            fi
+            sleep 0.2
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/plane-server.log
+            exit 1
+          fi
+          grep -q '"ok":true' /tmp/plane-health.json
+          for path in / /online.html /ai.html /web/ai.js; do
+            curl -fsS "http://127.0.0.1:4173${path}" >/dev/null
+          done
+
       - name: Build Docker image
         run: docker build -t plane-ci:${{ github.sha }} .
+
+      - name: Smoke Docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name plane-ci-run -p 127.0.0.1:4174:4173 plane-ci:${{ github.sha }}
+          trap 'docker rm -f plane-ci-run >/dev/null 2>&1 || true' EXIT
+          ready=0
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:4174/health >/tmp/plane-container-health.json; then
+              ready=1
+              break
+            fi
+            sleep 0.5
+          done
+          if [ "$ready" -ne 1 ]; then
+            docker logs plane-ci-run
+            exit 1
+          fi
+          grep -q '"ok":true' /tmp/plane-container-health.json
+          curl -fsS http://127.0.0.1:4174/ai.html >/dev/null
+          for attempt in {1..20}; do
+            health_status="$(docker inspect --format='{{.State.Health.Status}}' plane-ci-run)"
+            if [ "$health_status" = "healthy" ]; then
+              exit 0
+            fi
+            if [ "$health_status" = "unhealthy" ]; then
+              docker logs plane-ci-run
+              exit 1
+            fi
+            sleep 0.5
+          done
+          docker inspect plane-ci-run
+          exit 1
