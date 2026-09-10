@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { RoomStore } from '../src/online/room-store.ts';
 import { createPlaneServer } from '../scripts/server-core.mjs';
@@ -17,7 +18,7 @@ async function startServer() {
   const codes = ['ABC234'];
   const tokens = ['ta', 'tb'];
   const store = new RoomStore({ code: () => codes.shift()!, token: () => tokens.shift()!, random: () => 0.1 });
-  const server = createPlaneServer({ store, root: '/mnt/data/plane-online/dist', heartbeatMs: 0, cleanupMs: 0 });
+  const server = createPlaneServer({ store, root: fileURLToPath(new URL('../dist/', import.meta.url)), heartbeatMs: 0, cleanupMs: 0 });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
