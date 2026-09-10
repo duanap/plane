@@ -49,9 +49,19 @@ function chooseByIndex<T>(items: T[], random: () => number): T {
   return items[Math.floor(sample * items.length)];
 }
 
+function resolvedFootprintKeys(observations: AiObservation[]): Set<string> {
+  const resolved = new Set<string>();
+  for (const observation of observations) {
+    if (observation.kind !== 'DESTROYED') continue;
+    for (const cell of observation.revealedCells ?? []) resolved.add(key(cell.position));
+  }
+  return resolved;
+}
+
 function untriedCoordinates(observations: AiObservation[]): Position[] {
-  const attacked = new Set(observations.map((observation) => key(observation.position)));
-  return allCoordinates().filter((position) => !attacked.has(key(position)));
+  const unavailable = new Set(observations.map((observation) => key(observation.position)));
+  for (const cellKey of resolvedFootprintKeys(observations)) unavailable.add(cellKey);
+  return allCoordinates().filter((position) => !unavailable.has(key(position)));
 }
 
 function easyAttack(observations: AiObservation[], random: () => number): Position {
@@ -60,7 +70,10 @@ function easyAttack(observations: AiObservation[], random: () => number): Positi
 
 function normalAttack(observations: AiObservation[], random: () => number): Position {
   const available = untriedCoordinates(observations);
-  const unresolvedHits = observations.filter((observation) => observation.kind === 'HIT').map((observation) => observation.position);
+  const resolved = resolvedFootprintKeys(observations);
+  const unresolvedHits = observations
+    .filter((observation) => observation.kind === 'HIT' && !resolved.has(key(observation.position)))
+    .map((observation) => observation.position);
   if (unresolvedHits.length === 0) return chooseByIndex(available, random);
 
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -81,12 +94,10 @@ function normalAttack(observations: AiObservation[], random: () => number): Posi
 function hardAttack(observations: AiObservation[], random: () => number): Position {
   const attacked = new Set(observations.map((observation) => key(observation.position)));
   const misses = new Set(observations.filter((observation) => observation.kind === 'MISS').map((observation) => key(observation.position)));
-  const unresolvedHits = new Set(observations.filter((observation) => observation.kind === 'HIT').map((observation) => key(observation.position)));
-  const resolved = new Set<string>();
-  for (const observation of observations) {
-    if (observation.kind !== 'DESTROYED') continue;
-    for (const cell of observation.revealedCells ?? []) resolved.add(key(cell.position));
-  }
+  const resolved = resolvedFootprintKeys(observations);
+  const unresolvedHits = new Set(observations
+    .filter((observation) => observation.kind === 'HIT' && !resolved.has(key(observation.position)))
+    .map((observation) => key(observation.position)));
 
   const scores = new Map<string, { position: Position; score: number }>();
   for (const candidate of enumeratePlaneCandidates()) {
