@@ -1,0 +1,20 @@
+services:
+  plane:
+    build:
+      context: .
+    image: plane:v1
+    restart: unless-stopped
+    environment:
+      PORT: 4173
+    ports:
+      - "${PORT:-4173}:4173"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4173/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
