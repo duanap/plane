@@ -81,7 +81,7 @@ During placement, the client reuses the existing geometry helpers for preview, r
 
 ## Invite URL
 
-V1 uses `/online.html?room=ABC123`. Creating a room shows the room code plus a copyable absolute invite URL based on `location.origin`.
+V1 uses `/online.html?room=ABC234`. Room codes use six characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, excluding `0`, `1`, `I`, and `O`. Creating a room shows the room code plus a copyable absolute invite URL based on `location.origin`.
 
 ## Testing
 
