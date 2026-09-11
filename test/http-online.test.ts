@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RoomStore } from '../src/online/room-store.ts';
 import { createPlaneServer } from '../scripts/server-core.mjs';
 import type { Plane } from '../src/game/types.ts';
@@ -47,6 +50,30 @@ async function readEvent(reader: ReadableStreamDefaultReader<Uint8Array>) {
   const data = block.split('\n').find((line) => line.startsWith('data: '))?.slice(6);
   return data ? JSON.parse(data) : null;
 }
+
+test('compiled module namespaces are served from the build root', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'plane-static-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'public'), { recursive: true });
+  for (const directory of ['web', 'game', 'online', 'ai']) {
+    await mkdir(join(root, directory), { recursive: true });
+    await writeFile(join(root, directory, 'probe.js'), `export const source = '${directory}';\n`);
+  }
+
+  const server = createPlaneServer({ store: new RoomStore(), root, heartbeatMs: 0, cleanupMs: 0 });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => server.close());
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('missing server address');
+  const base = `http://127.0.0.1:${address.port}`;
+
+  for (const directory of ['web', 'game', 'online', 'ai']) {
+    const response = await fetch(`${base}/${directory}/probe.js`);
+    assert.equal(response.status, 200, `${directory} modules must be served from dist/${directory}`);
+    assert.equal(await response.text(), `export const source = '${directory}';\n`);
+  }
+});
 
 test('HTTP API creates, joins, places, readies and returns sanitized state', async (t) => {
   const { server, base } = await startServer();
