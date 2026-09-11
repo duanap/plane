@@ -11,6 +11,8 @@ const contentTypes = {
   '.png': 'image/png',
 };
 
+const compiledModulePrefixes = ['/web/', '/game/', '/online/', '/ai/'];
+
 class HttpError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -53,8 +55,9 @@ async function readJson(req, maxBytes = 64 * 1024) {
 
 function safeStaticPath(root, pathname) {
   const decoded = decodeURIComponent(pathname);
+  const isCompiledModule = compiledModulePrefixes.some((prefix) => decoded.startsWith(prefix));
   const relative = decoded === '/' ? 'public/index.html'
-    : decoded.startsWith('/web/') ? decoded.slice(1)
+    : isCompiledModule ? decoded.slice(1)
       : join('public', decoded.replace(/^\/+/, ''));
   const base = resolve(root);
   const full = normalize(resolve(base, relative));
