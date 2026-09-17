@@ -3,6 +3,10 @@ import type { Plane, PlaneCell, Position } from './types.ts';
 
 export type AttackKind = 'MISS' | 'HIT' | 'DESTROYED';
 
+export interface GameOptions {
+  revealDestroyedPlane: boolean;
+}
+
 export interface PlayerState {
   id: string;
   planes: Plane[];
@@ -21,6 +25,7 @@ export interface GameState {
   players: [PlayerState, PlayerState];
   currentPlayerId: string;
   attacks: AttackRecord[];
+  options: GameOptions;
   winnerId?: string;
 }
 
@@ -51,6 +56,8 @@ export class GameRuleError extends Error {
   }
 }
 
+const DEFAULT_OPTIONS: GameOptions = { revealDestroyedPlane: true };
+
 function clonePlane(plane: Plane): Plane {
   return {
     ...plane,
@@ -65,7 +72,11 @@ function clonePlayer(player: PlayerState): PlayerState {
   };
 }
 
-export function createGame(players: PlayerState[], firstPlayerId?: string): GameState {
+export function createGame(
+  players: PlayerState[],
+  firstPlayerId?: string,
+  options: Partial<GameOptions> = {},
+): GameState {
   if (players.length !== 2 || players[0].id === players[1].id) {
     throw new GameRuleError('INVALID_PLAYERS', 'Game requires exactly two distinct players.');
   }
@@ -86,6 +97,7 @@ export function createGame(players: PlayerState[], firstPlayerId?: string): Game
     players: [clonePlayer(players[0]), clonePlayer(players[1])],
     currentPlayerId: chosenFirst,
     attacks: [],
+    options: { ...DEFAULT_OPTIONS, ...options },
   };
 }
 
@@ -145,6 +157,7 @@ export function attack(game: GameState, position: Position): AttackOutcome {
     players: nextPlayers,
     currentPlayerId: targetDefeated ? attacker.id : target.id,
     attacks: [...game.attacks, record],
+    options: { ...game.options },
     ...(targetDefeated ? { winnerId: attacker.id } : {}),
   };
 
