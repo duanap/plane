@@ -1,45 +1,36 @@
-import { planeCells, randomFleet, validatePlacement } from '../game/geometry.ts';
+import { planeCells, validatePlacement } from '../game/geometry.ts';
 import type { AttackKind, GameState } from '../game/game.ts';
-import type { Direction, Plane, PlaneCell, Position } from '../game/types.ts';
+import type { Plane, PlaneCell, Position } from '../game/types.ts';
 import { createAiSession, humanAttack, runAiTurn, type AiSessionState } from '../ai/session.ts';
 import type { AiDifficulty } from '../ai/ai.ts';
+import { createPlacementFleet, dragCandidate, planeAt, rotateCandidate, type PlacementCandidate } from './placement-model.ts';
 
-type Stage = 'DIFFICULTY' | 'PLACEMENT' | 'PLAYING' | 'FINISHED';
+type Stage = 'SETTINGS' | 'PLACEMENT' | 'PLAYING' | 'FINISHED';
 type BattleBoard = 'ENEMY' | 'OWN';
+type DragState = { planeId: string; grabbed: Position; preview?: PlacementCandidate };
 
-const appElement = document.querySelector<HTMLDivElement>('#app');
-if (!appElement) throw new Error('Missing #app');
-const app: HTMLDivElement = appElement;
+const app = document.querySelector<HTMLDivElement>('#app');
+if (!app) throw new Error('Missing #app');
 
-let stage: Stage = 'DIFFICULTY';
+let stage: Stage = 'SETTINGS';
 let difficulty: AiDifficulty = 'NORMAL';
+let revealDestroyedPlane = true;
 let humanFleet: Plane[] = [];
-let placementDirection: Direction = 'UP';
+let selectedPlaneId: string | null = null;
 let selectedTarget: Position | null = null;
 let session: AiSessionState | null = null;
-let lastMessage = '选择一个难度开始练习。';
 let activeBattleBoard: BattleBoard = 'ENEMY';
+let drag: DragState | null = null;
+let message = '选择难度与本局击落显示规则。';
 let aiTurnScheduled = false;
 
-const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT'];
-const directionText: Record<Direction, string> = {
-  UP: '↑ 向上', RIGHT: '→ 向右', DOWN: '↓ 向下', LEFT: '← 向左',
-};
-const difficultyText: Record<AiDifficulty, string> = {
-  EASY: '简单', NORMAL: '普通', HARD: '困难',
-};
-
+const difficultyText: Record<AiDifficulty, string> = { EASY: '简单', NORMAL: '普通', HARD: '困难' };
 function posKey(position: Position): string { return `${position.x}:${position.y}`; }
 function coord(position: Position): string { return `${String.fromCharCode(65 + position.y)}${position.x + 1}`; }
-function button(label: string, id: string, className = 'action', disabled = false): string {
-  return `<button class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${label}</button>`;
-}
+function escapeHtml(value: string): string { return value.replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[c]!); }
+function button(label: string, id: string, className = 'action', disabled = false): string { return `<button class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`; }
 function shell(content: string, badge: string): string {
-  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>人机练习 · AI 不读取你的隐藏布局</p></div><div class="top-actions"><a class="text-link" href="/">本地双人</a><a class="text-link" href="/online.html">在线对战</a><div class="badge">${badge}</div></div></header>${content}</div>`;
-}
-
-function attackMap(game: GameState, attackerId: 'HUMAN' | 'AI'): Map<string, AttackKind> {
-  return new Map(game.attacks.filter((record) => record.attackerId === attackerId).map((record) => [posKey(record.position), record.kind]));
+  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>AI 练习 · AI 只读取公开攻击结果</p></div><div class="top-actions"><a class="text-link" href="/">模式首页</a><a class="text-link" href="/online.html">在线对战</a><span class="badge">${escapeHtml(badge)}</span></div></header>${content}</div>`;
 }
 
 function planeCellMap(planes: Plane[]): Map<string, PlaneCell> {
@@ -47,168 +38,132 @@ function planeCellMap(planes: Plane[]): Map<string, PlaneCell> {
   for (const plane of planes) for (const cell of planeCells(plane)) result.set(posKey(cell.position), cell);
   return result;
 }
+function attackMap(game: GameState, attackerId: 'HUMAN' | 'AI'): Map<string, AttackKind> {
+  return new Map(game.attacks.filter((record) => record.attackerId === attackerId).map((record) => [posKey(record.position), record.kind]));
+}
 
-function boardHtml(options: {
-  ownPlanes?: Plane[];
-  attackViewFor?: 'HUMAN' | 'AI';
-  interactive?: boolean;
-  revealAllEnemy?: boolean;
-}): string {
-  const game = session?.game;
-  const ownCells = planeCellMap(options.ownPlanes ?? []);
-  const attacks = game && options.attackViewFor ? attackMap(game, options.attackViewFor) : new Map<string, AttackKind>();
-  const opponent = game && options.attackViewFor ? game.players.find((player) => player.id !== options.attackViewFor) : undefined;
-  const revealedCells = new Map<string, PlaneCell>();
-  for (const plane of opponent?.planes ?? []) {
-    if (plane.destroyed || options.revealAllEnemy) {
-      for (const cell of planeCells(plane)) revealedCells.set(posKey(cell.position), cell);
+function placementBoard(): string {
+  const candidate = drag?.preview ?? null;
+  const fleet = candidate?.fleet ?? humanFleet;
+  const map = planeCellMap(fleet);
+  const invalidPlaneId = candidate && !candidate.valid ? drag?.planeId : null;
+  let html = '<div class="board placement-board" id="ai-placement-board">';
+  for (let y = 0; y < 10; y += 1) for (let x = 0; x < 10; x += 1) {
+    const position = { x, y };
+    const cell = map.get(posKey(position));
+    const classes = ['cell'];
+    if (cell) {
+      classes.push('plane', cell.kind === 'HEAD' ? 'head' : 'body');
+      if (cell.planeId === selectedPlaneId) classes.push('plane-selected');
+      if (cell.planeId === invalidPlaneId) classes.push('invalid');
     }
-  }
-
-  let html = '<div class="board">';
-  for (let y = 0; y < 10; y += 1) {
-    for (let x = 0; x < 10; x += 1) {
-      const position = { x, y };
-      const key = posKey(position);
-      const classes = ['cell'];
-      const own = ownCells.get(key);
-      const attackKind = attacks.get(key);
-      const revealed = revealedCells.get(key);
-      if (own) classes.push('plane', own.kind === 'HEAD' ? 'head' : 'body');
-      if (attackKind === 'MISS') classes.push('miss');
-      if (attackKind === 'HIT') classes.push('hit');
-      if (attackKind === 'DESTROYED') classes.push('destroyed');
-      if (revealed) classes.push('revealed', revealed.kind === 'HEAD' ? 'revealed-head' : 'revealed-body');
-      if (selectedTarget && options.attackViewFor === 'HUMAN' && selectedTarget.x === x && selectedTarget.y === y) classes.push('selected');
-      const tabindex = options.interactive ? '' : 'tabindex="-1"';
-      html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" title="${coord(position)}" aria-label="${coord(position)}" ${tabindex}></button>`;
-    }
+    html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" aria-label="${coord(position)}"></button>`;
   }
   return `${html}</div>`;
 }
 
-function renderDifficulty(): void {
-  app.innerHTML = shell(`<section class="panel online-home"><div class="online-hero"><h2>选择 AI 难度</h2><p class="subtle">三档 AI 都只读取自己的公开攻击结果，不会查看你的真实飞机坐标。</p></div><div class="difficulty-grid">
-    <button class="difficulty-card" data-difficulty="EASY"><strong>简单</strong><span>随机攻击未尝试坐标，适合熟悉规则。</span></button>
-    <button class="difficulty-card featured" data-difficulty="NORMAL"><strong>普通</strong><span>命中后会追踪附近格子，推荐首次挑战。</span></button>
-    <button class="difficulty-card" data-difficulty="HARD"><strong>困难</strong><span>根据合法飞机形状和 MISS/HIT 信息进行概率推理。</span></button>
-  </div><div class="notice">先选难度，然后部署你的 3 架战机。</div></section>`, '人机练习');
-  document.querySelectorAll<HTMLButtonElement>('[data-difficulty]').forEach((item) => item.addEventListener('click', () => {
-    difficulty = item.dataset.difficulty as AiDifficulty;
-    stage = 'PLACEMENT';
-    humanFleet = [];
-    lastMessage = '点击棋盘选择机头位置。';
-    render();
-  }));
+function boardHtml(options: { ownPlanes?: Plane[]; attackViewFor?: 'HUMAN' | 'AI'; interactive?: boolean; revealAllEnemy?: boolean }): string {
+  const game = session?.game;
+  const own = planeCellMap(options.ownPlanes ?? []);
+  const attacks = game && options.attackViewFor ? attackMap(game, options.attackViewFor) : new Map<string, AttackKind>();
+  const opponent = game && options.attackViewFor ? game.players.find((player) => player.id !== options.attackViewFor) : undefined;
+  const revealed = new Map<string, PlaneCell>();
+  if (opponent) {
+    for (const plane of opponent.planes) {
+      if (options.revealAllEnemy || (revealDestroyedPlane && plane.destroyed)) for (const cell of planeCells(plane)) revealed.set(posKey(cell.position), cell);
+    }
+  }
+  let html = '<div class="board">';
+  for (let y = 0; y < 10; y += 1) for (let x = 0; x < 10; x += 1) {
+    const position = { x, y };
+    const key = posKey(position);
+    const classes = ['cell'];
+    const ownCell = own.get(key);
+    const mark = attacks.get(key);
+    const revealedCell = revealed.get(key);
+    if (ownCell) classes.push('plane', ownCell.kind === 'HEAD' ? 'head' : 'body');
+    if (mark === 'MISS') classes.push('miss');
+    if (mark === 'HIT') classes.push('hit');
+    if (mark === 'DESTROYED') classes.push('destroyed');
+    if (revealedCell) classes.push('revealed', revealedCell.kind === 'HEAD' ? 'revealed-head' : 'revealed-body');
+    if (selectedTarget && options.attackViewFor === 'HUMAN' && posKey(selectedTarget) === key) classes.push('selected');
+    html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" aria-label="${coord(position)}" ${options.interactive ? '' : 'tabindex="-1"'}></button>`;
+  }
+  return `${html}</div>`;
+}
+
+function renderSettings(): void {
+  app.innerHTML = shell(`<section class="panel online-home"><div class="online-hero"><h2>AI 练习设置</h2><p class="subtle">三档 AI 都不会读取你的隐藏布局。</p></div><div class="difficulty-grid"><button class="difficulty-card ${difficulty === 'EASY' ? 'featured' : ''}" data-difficulty="EASY"><strong>简单</strong><span>随机攻击未尝试坐标。</span></button><button class="difficulty-card ${difficulty === 'NORMAL' ? 'featured' : ''}" data-difficulty="NORMAL"><strong>普通</strong><span>命中后追踪附近格子。</span></button><button class="difficulty-card ${difficulty === 'HARD' ? 'featured' : ''}" data-difficulty="HARD"><strong>困难</strong><span>根据合法飞机形状推理。</span></button></div><div class="rule-choice"><label class="rule-option ${revealDestroyedPlane ? 'active' : ''}"><input type="radio" name="reveal" value="yes" ${revealDestroyedPlane ? 'checked' : ''}><strong>击落后显示完整轮廓</strong><span>击中机头后公开整架飞机。</span></label><label class="rule-option ${!revealDestroyedPlane ? 'active' : ''}"><input type="radio" name="reveal" value="no" ${!revealDestroyedPlane ? 'checked' : ''}><strong>击落后不显示轮廓</strong><span>只保留 ✹ 与已知攻击标记。</span></label></div><div class="controls room-controls">${button('开始部署', 'start-placement', 'action primary')}</div></section>`, '人机设置');
+  document.querySelectorAll<HTMLButtonElement>('[data-difficulty]').forEach((item) => item.addEventListener('click', () => { difficulty = item.dataset.difficulty as AiDifficulty; render(); }));
+  document.querySelectorAll<HTMLInputElement>('input[name="reveal"]').forEach((item) => item.addEventListener('change', () => { revealDestroyedPlane = item.value === 'yes'; render(); }));
+  document.querySelector('#start-placement')?.addEventListener('click', () => { humanFleet = createPlacementFleet('h'); selectedPlaneId = humanFleet[0].id; stage = 'PLACEMENT'; message = '拖动整架飞机调整位置；选中后可旋转。'; render(); });
 }
 
 function renderPlacement(): void {
-  const ready = humanFleet.length === 3 && validatePlacement(humanFleet).valid;
-  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-title"><strong>部署你的战机</strong><span>${humanFleet.length}/3 架</span></div>${boardHtml({ ownPlanes: humanFleet, interactive: true })}<div class="legend" style="margin-top:12px"><span><i class="dot"></i> 已部署战机</span><span>机头坐标 + 方向决定整架飞机</span></div></div><aside class="sidebar"><div class="card"><h3>难度</h3><div class="statline"><span>当前 AI</span><b>${difficultyText[difficulty]}</b></div><button class="action" id="change-difficulty">重新选择难度</button></div><div class="card"><h3>当前方向</h3><div style="font-size:26px">${directionText[placementDirection]}</div></div><div class="card status">${lastMessage}</div><div class="controls">${button('旋转战机 ↻','rotate')}${button('随机摆放 3 架','random')}${button('撤销最后一架','undo','action',humanFleet.length===0)}${button('重新摆放','reset','action danger',humanFleet.length===0)}${button('开始练习','start','action primary',!ready)}</div></aside></section>`, `${difficultyText[difficulty]} AI`);
-
-  document.querySelectorAll<HTMLButtonElement>('.cell').forEach((cell) => cell.addEventListener('click', () => {
-    if (humanFleet.length >= 3) { lastMessage = '已经摆满 3 架飞机，可撤销或开始练习。'; render(); return; }
-    const candidate: Plane = { id: `h${humanFleet.length + 1}`, head: { x: Number(cell.dataset.x), y: Number(cell.dataset.y) }, direction: placementDirection, destroyed: false };
-    const validation = validatePlacement([...humanFleet, candidate]);
-    if (!validation.valid) lastMessage = validation.reason === 'OUT_OF_BOUNDS' ? '该位置会让飞机超出战场。' : '该位置与已有飞机重叠。';
-    else { humanFleet = [...humanFleet, candidate]; lastMessage = `已部署第 ${humanFleet.length} 架，机头 ${coord(candidate.head)}。`; }
-    render();
+  const legal = humanFleet.length === 3 && validatePlacement(humanFleet).valid;
+  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-title"><strong>部署你的战机</strong><span>${difficultyText[difficulty]} AI</span></div>${placementBoard()}<div class="legend"><span><i class="dot"></i> 战机</span><span>蓝框 = 当前选择</span><span>红色 = 非法位置</span></div></div><aside class="sidebar"><div class="card"><h3>本局规则</h3><div class="statline"><span>AI</span><b>${difficultyText[difficulty]}</b></div><div class="statline"><span>击落轮廓</span><b>${revealDestroyedPlane ? '显示' : '隐藏'}</b></div></div><div class="card status">${escapeHtml(message)}</div><div class="controls">${button('旋转选中飞机 ↻', 'rotate-plane', 'action', !selectedPlaneId)}${button('随机重新摆放', 'random-fleet')}${button('开始练习', 'start-game', 'action primary', !legal)}${button('返回设置', 'back-settings')}</div></aside></section>`, '部署阶段');
+  document.querySelectorAll<HTMLButtonElement>('#ai-placement-board .cell').forEach((cell) => cell.addEventListener('pointerdown', (event) => {
+    const position = { x: Number(cell.dataset.x), y: Number(cell.dataset.y) };
+    const plane = planeAt(humanFleet, position);
+    if (!plane) return;
+    event.preventDefault(); selectedPlaneId = plane.id; drag = { planeId: plane.id, grabbed: position }; render();
   }));
-  document.querySelector('#rotate')?.addEventListener('click', () => { placementDirection = directions[(directions.indexOf(placementDirection)+1)%directions.length]; render(); });
-  document.querySelector('#random')?.addEventListener('click', () => { humanFleet = randomFleet('h'); lastMessage = '已生成合法随机布局。'; render(); });
-  document.querySelector('#undo')?.addEventListener('click', () => { humanFleet = humanFleet.slice(0,-1); lastMessage = '已撤销最后一架飞机。'; render(); });
-  document.querySelector('#reset')?.addEventListener('click', () => { humanFleet = []; lastMessage = '布局已清空。'; render(); });
-  document.querySelector('#change-difficulty')?.addEventListener('click', () => { stage = 'DIFFICULTY'; render(); });
-  document.querySelector('#start')?.addEventListener('click', () => {
-    session = createAiSession(humanFleet, difficulty);
-    stage = 'PLAYING';
-    selectedTarget = null;
-    activeBattleBoard = 'ENEMY';
-    lastMessage = session.game.currentPlayerId === 'HUMAN' ? '你获得先手，请选择攻击坐标。' : 'AI 获得先手，正在推理……';
-    render();
-  });
+  document.querySelector('#rotate-plane')?.addEventListener('click', () => { if (!selectedPlaneId) return; const result = rotateCandidate(humanFleet, selectedPlaneId); if (result.valid) { humanFleet = result.fleet; message = '已旋转选中飞机。'; } else message = '该方向会出界或重叠，已保持原方向。'; render(); });
+  document.querySelector('#random-fleet')?.addEventListener('click', () => { humanFleet = createPlacementFleet('h'); selectedPlaneId = humanFleet[0].id; message = '已生成新的合法随机布局。'; render(); });
+  document.querySelector('#back-settings')?.addEventListener('click', () => { stage = 'SETTINGS'; render(); });
+  document.querySelector('#start-game')?.addEventListener('click', () => { session = createAiSession(humanFleet, difficulty, { revealDestroyedPlane }); selectedTarget = null; activeBattleBoard = 'ENEMY'; stage = 'PLAYING'; message = session.game.currentPlayerId === 'HUMAN' ? '你获得先手，请选择攻击坐标。' : 'AI 获得先手，正在推理……'; render(); });
 }
 
-function destroyedCount(playerId: 'HUMAN' | 'AI'): number {
-  return session?.game.players.find((player) => player.id === playerId)?.planes.filter((plane) => plane.destroyed).length ?? 0;
-}
-
+function destroyedCount(id: 'HUMAN' | 'AI'): number { return session?.game.players.find((p) => p.id === id)?.planes.filter((p) => p.destroyed).length ?? 0; }
 function scheduleAiTurn(): void {
   if (!session || session.game.status !== 'PLAYING' || session.game.currentPlayerId !== 'AI' || aiTurnScheduled) return;
   aiTurnScheduled = true;
   window.setTimeout(() => {
     if (!session || session.game.status !== 'PLAYING' || session.game.currentPlayerId !== 'AI') { aiTurnScheduled = false; return; }
-    const outcome = runAiTurn(session);
-    session = outcome.session;
-    const resultText = outcome.result.kind === 'MISS' ? '未命中' : outcome.result.kind === 'HIT' ? '命中机身' : '击中机头，击落一架';
-    lastMessage = `AI 攻击 ${coord(outcome.position)}：${resultText}。`;
-    aiTurnScheduled = false;
+    const outcome = runAiTurn(session); session = outcome.session; aiTurnScheduled = false;
+    message = `AI 攻击 ${coord(outcome.position)}：${outcome.result.kind === 'MISS' ? '未命中 ○' : outcome.result.kind === 'HIT' ? '命中机身 ×' : '击中机头 ✹'}。`;
     if (session.game.status === 'FINISHED') stage = 'FINISHED';
     render();
   }, 420);
 }
 
-function renderBattleBoard(): string {
-  if (!session) return '';
-  if (activeBattleBoard === 'OWN') {
-    return `<div class="board-title"><strong>我的战场</strong><span>已损失 ${destroyedCount('HUMAN')}/3</span></div>${boardHtml({ ownPlanes: session.game.players.find((p)=>p.id==='HUMAN')?.planes ?? [], attackViewFor: 'AI' })}<div class="legend" style="margin-top:12px"><span><i class="dot"></i> 我的飞机</span><span>○ AI 未命中</span><span>× AI 命中</span><span>✹ 机头被击落</span></div>`;
-  }
-  return `<div class="board-title"><strong>AI 战场</strong><span>已击落 ${destroyedCount('AI')}/3</span></div>${boardHtml({ attackViewFor: 'HUMAN', interactive: session.game.currentPlayerId === 'HUMAN' })}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div>`;
-}
-
 function renderBattle(): void {
   if (!session) return;
-  if (session.game.status === 'FINISHED') { stage = 'FINISHED'; renderFinished(); return; }
+  if (session.game.status === 'FINISHED') { stage = 'FINISHED'; return renderFinished(); }
   const humanTurn = session.game.currentPlayerId === 'HUMAN';
-  const targetLabel = selectedTarget ? coord(selectedTarget) : '未选择';
-  const alreadyAttacked = selectedTarget ? session.game.attacks.some((record) => record.attackerId === 'HUMAN' && posKey(record.position) === posKey(selectedTarget!)) : false;
-  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-tabs"><button class="tab ${activeBattleBoard==='ENEMY'?'active':''}" data-board="ENEMY">AI 战场</button><button class="tab ${activeBattleBoard==='OWN'?'active':''}" data-board="OWN">我的战场</button></div>${renderBattleBoard()}</div><aside class="sidebar"><div class="card"><h3>${humanTurn ? '你的回合' : 'AI 回合'}</h3><div class="statline"><span>难度</span><b>${difficultyText[difficulty]}</b></div><div class="statline"><span>目标坐标</span><b>${targetLabel}</b></div><div class="statline"><span>我方损失</span><b>${destroyedCount('HUMAN')}/3</b></div><div class="statline"><span>敌机击落</span><b>${destroyedCount('AI')}/3</b></div></div><div class="card status">${humanTurn ? lastMessage : 'AI 仅根据公开攻击结果计算下一目标……'}</div><div class="controls">${button(selectedTarget ? `攻击 ${targetLabel}` : '请选择目标','fire','action primary',!humanTurn || activeBattleBoard!=='ENEMY' || !selectedTarget || alreadyAttacked)}</div></aside></section>`, `${difficultyText[difficulty]} AI · ${humanTurn ? '你的回合' : 'AI 推理中'}`);
-
+  const label = selectedTarget ? coord(selectedTarget) : '未选择';
+  const used = selectedTarget ? session.game.attacks.some((r) => r.attackerId === 'HUMAN' && posKey(r.position) === posKey(selectedTarget!)) : false;
+  const humanPlanes = session.game.players.find((p) => p.id === 'HUMAN')?.planes ?? [];
+  const board = activeBattleBoard === 'OWN' ? boardHtml({ ownPlanes: humanPlanes, attackViewFor: 'AI' }) : boardHtml({ attackViewFor: 'HUMAN', interactive: humanTurn });
+  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-tabs"><button class="tab ${activeBattleBoard === 'ENEMY' ? 'active' : ''}" data-board="ENEMY">AI 战场</button><button class="tab ${activeBattleBoard === 'OWN' ? 'active' : ''}" data-board="OWN">我的战场</button></div><div class="board-title"><strong>${activeBattleBoard === 'ENEMY' ? 'AI 战场' : '我的战场'}</strong><span>${activeBattleBoard === 'ENEMY' ? `已击落 ${destroyedCount('AI')}/3` : `已损失 ${destroyedCount('HUMAN')}/3`}</span></div>${board}<div class="legend"><span class="miss-mark">○ 未命中</span><span class="hit-mark">× 命中</span><span class="destroyed-mark">✹ 击落</span></div></div><aside class="sidebar"><div class="card"><h3>${humanTurn ? '你的回合' : 'AI 回合'}</h3><div class="statline"><span>难度</span><b>${difficultyText[difficulty]}</b></div><div class="statline"><span>目标</span><b>${label}</b></div><div class="statline"><span>轮廓规则</span><b>${revealDestroyedPlane ? '显示' : '隐藏'}</b></div></div><div class="card status">${escapeHtml(humanTurn ? message : 'AI 仅根据公开攻击结果计算下一目标……')}</div><div class="controls">${button(selectedTarget ? `攻击 ${label}` : '请选择目标', 'fire', 'action primary', !humanTurn || activeBattleBoard !== 'ENEMY' || !selectedTarget || used)}</div></aside></section>`, `${difficultyText[difficulty]} AI`);
   document.querySelectorAll<HTMLButtonElement>('[data-board]').forEach((tab) => tab.addEventListener('click', () => { activeBattleBoard = tab.dataset.board as BattleBoard; selectedTarget = null; render(); }));
-  if (humanTurn && activeBattleBoard === 'ENEMY') {
-    document.querySelectorAll<HTMLButtonElement>('.cell').forEach((cell) => cell.addEventListener('click', () => {
-      selectedTarget = { x: Number(cell.dataset.x), y: Number(cell.dataset.y) };
-      const used = session?.game.attacks.some((record) => record.attackerId === 'HUMAN' && posKey(record.position) === posKey(selectedTarget!));
-      lastMessage = used ? `${coord(selectedTarget)} 已经攻击过，请选择其他坐标。` : `已锁定 ${coord(selectedTarget)}，点击攻击按钮确认。`;
-      render();
-    }));
-  }
-  document.querySelector('#fire')?.addEventListener('click', () => {
-    if (!session || !selectedTarget || session.game.currentPlayerId !== 'HUMAN') return;
-    const target = selectedTarget;
-    const outcome = humanAttack(session, target);
-    session = outcome.session;
-    selectedTarget = null;
-    lastMessage = outcome.result.kind === 'MISS' ? `${coord(target)}：未命中。` : outcome.result.kind === 'HIT' ? `${coord(target)}：命中机身！` : `${coord(target)}：击中机头，击落敌机！`;
-    if (session.game.status === 'FINISHED') stage = 'FINISHED';
-    render();
-  });
+  if (humanTurn && activeBattleBoard === 'ENEMY') document.querySelectorAll<HTMLButtonElement>('.board .cell').forEach((cell) => cell.addEventListener('click', () => { selectedTarget = { x: Number(cell.dataset.x), y: Number(cell.dataset.y) }; const already = session?.game.attacks.some((r) => r.attackerId === 'HUMAN' && posKey(r.position) === posKey(selectedTarget!)); message = already ? `${coord(selectedTarget)} 已攻击过。` : `已选择 ${coord(selectedTarget)}，点击攻击确认。`; render(); }));
+  document.querySelector('#fire')?.addEventListener('click', () => { if (!session || !selectedTarget || session.game.currentPlayerId !== 'HUMAN') return; const target = { ...selectedTarget }; const outcome = humanAttack(session, target); session = outcome.session; selectedTarget = null; message = `${coord(target)}：${outcome.result.kind === 'MISS' ? '未命中 ○' : outcome.result.kind === 'HIT' ? '命中机身 ×' : '击中机头 ✹'}。`; if (session.game.status === 'FINISHED') stage = 'FINISHED'; render(); });
   scheduleAiTurn();
-}
-
-function finalBoard(playerId: 'HUMAN' | 'AI', attackViewFor: 'HUMAN' | 'AI'): string {
-  if (!session) return '';
-  const planes = session.game.players.find((player) => player.id === playerId)?.planes ?? [];
-  return boardHtml({ ownPlanes: playerId === 'HUMAN' ? planes : undefined, attackViewFor, revealAllEnemy: playerId === 'AI' });
 }
 
 function renderFinished(): void {
   if (!session) return;
-  const humanWon = session.game.winnerId === 'HUMAN';
-  const humanAttacks = session.game.attacks.filter((record) => record.attackerId === 'HUMAN');
-  const aiAttacks = session.game.attacks.filter((record) => record.attackerId === 'AI');
-  const humanHits = humanAttacks.filter((record) => record.kind !== 'MISS').length;
-  app.innerHTML = shell(`<section class="panel result"><h2>${humanWon ? '🎉 你赢了' : 'AI 获胜'}</h2><p class="subtle">${humanWon ? '你率先找到了全部 3 个敌机机头。' : `${difficultyText[difficulty]} AI 率先击落了你的全部战机。`}</p><div class="result-grid"><div class="card">你的攻击<strong>${humanAttacks.length}</strong></div><div class="card">你的命中<strong>${humanHits}</strong></div><div class="card">AI 攻击<strong>${aiAttacks.length}</strong></div></div><div class="final-board-section"><div class="board-tabs"><button class="tab ${activeBattleBoard==='ENEMY'?'active':''}" data-final-board="ENEMY">AI 最终战场</button><button class="tab ${activeBattleBoard==='OWN'?'active':''}" data-final-board="OWN">我的最终战场</button></div><div class="board-wrap">${activeBattleBoard === 'ENEMY' ? `<div class="board-title"><strong>AI 完整布局</strong><span>机头已标记</span></div>${finalBoard('AI','HUMAN')}` : `<div class="board-title"><strong>我的完整布局</strong><span>AI 攻击记录</span></div>${finalBoard('HUMAN','AI')}`}</div></div><div class="controls result-controls">${button(`再来一局 · ${difficultyText[difficulty]}`,'restart','action primary')}${button('重新选择难度','difficulty','action')}<a class="action action-link" href="/">返回首页</a></div></section>`, '练习结束');
-  document.querySelectorAll<HTMLButtonElement>('[data-final-board]').forEach((tab) => tab.addEventListener('click', () => { activeBattleBoard = tab.dataset.finalBoard as BattleBoard; render(); }));
-  document.querySelector('#restart')?.addEventListener('click', () => { stage='PLACEMENT'; humanFleet=[]; session=null; selectedTarget=null; placementDirection='UP'; activeBattleBoard='ENEMY'; lastMessage='点击棋盘选择机头位置。'; render(); });
-  document.querySelector('#difficulty')?.addEventListener('click', () => { stage='DIFFICULTY'; session=null; humanFleet=[]; selectedTarget=null; activeBattleBoard='ENEMY'; lastMessage='选择一个难度开始练习。'; render(); });
+  const won = session.game.winnerId === 'HUMAN';
+  const aiPlanes = session.game.players.find((p) => p.id === 'AI')?.planes ?? [];
+  const humanPlanes = session.game.players.find((p) => p.id === 'HUMAN')?.planes ?? [];
+  app.innerHTML = shell(`<section class="panel result"><h2>${won ? '你赢了' : 'AI 获胜'}</h2><p class="subtle">战斗结束，双方完整布局已公开。</p><div class="final-board-grid"><div><h3>AI 最终布局</h3>${boardHtml({ ownPlanes: aiPlanes, revealAllEnemy: true })}</div><div><h3>我的最终布局</h3>${boardHtml({ ownPlanes: humanPlanes })}</div></div><div class="controls room-controls">${button('再来一局', 'again', 'action primary')}${button('重新设置', 'settings')}<a class="action-link" href="/">返回模式首页</a></div></section>`, '练习结束');
+  document.querySelector('#again')?.addEventListener('click', () => { humanFleet = createPlacementFleet('h'); selectedPlaneId = humanFleet[0].id; session = null; stage = 'PLACEMENT'; message = '拖动整架飞机调整位置；选中后可旋转。'; render(); });
+  document.querySelector('#settings')?.addEventListener('click', () => { session = null; stage = 'SETTINGS'; render(); });
 }
 
-function render(): void {
-  if (stage === 'DIFFICULTY') return renderDifficulty();
-  if (stage === 'PLACEMENT') return renderPlacement();
-  if (stage === 'PLAYING') return renderBattle();
-  renderFinished();
-}
+function render(): void { if (stage === 'SETTINGS') renderSettings(); else if (stage === 'PLACEMENT') renderPlacement(); else if (stage === 'PLAYING') renderBattle(); else renderFinished(); }
+
+window.addEventListener('pointermove', (event) => {
+  if (!drag || stage !== 'PLACEMENT') return;
+  const board = document.querySelector<HTMLElement>('#ai-placement-board'); if (!board) return;
+  const rect = board.getBoundingClientRect(); const x = Math.floor(((event.clientX - rect.left) / rect.width) * 10); const y = Math.floor(((event.clientY - rect.top) / rect.height) * 10);
+  if (x < 0 || x > 9 || y < 0 || y > 9) return;
+  const next = dragCandidate(humanFleet, drag.planeId, drag.grabbed, { x, y });
+  const oldHead = drag.preview?.fleet.find((p) => p.id === drag!.planeId)?.head; const newHead = next.fleet.find((p) => p.id === drag!.planeId)?.head;
+  if (oldHead?.x === newHead?.x && oldHead?.y === newHead?.y && drag.preview?.valid === next.valid) return;
+  drag.preview = next; render();
+});
+window.addEventListener('pointerup', () => { if (!drag) return; if (drag.preview?.valid) { humanFleet = drag.preview.fleet; message = '飞机位置已更新。'; } else if (drag.preview) message = '该位置出界或重叠，已恢复原位置。'; drag = null; render(); });
 
 render();
