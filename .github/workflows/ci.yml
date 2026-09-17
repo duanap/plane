@@ -30,18 +30,25 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Test
+        id: tests
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           npm test 2>&1 | tee /tmp/plane-test.log
 
       - name: Build
+        id: build
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           npm run build 2>&1 | tee /tmp/plane-build.log
 
       - name: Smoke built server
+        id: smoke
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -66,9 +73,15 @@ jobs:
           done
 
       - name: Build Docker image
+        id: docker_build
+        if: steps.tests.outcome == 'success' && steps.build.outcome == 'success'
+        continue-on-error: true
         run: docker build -t plane-ci:${{ github.sha }} .
 
       - name: Smoke Docker image
+        id: docker_smoke
+        if: steps.docker_build.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -114,3 +127,13 @@ jobs:
             /tmp/plane-build.log
             /tmp/plane-server.log
           if-no-files-found: ignore
+
+      - name: Final gate
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.tests.outcome }}" = "success"
+          test "${{ steps.build.outcome }}" = "success"
+          test "${{ steps.smoke.outcome }}" = "success"
+          test "${{ steps.docker_build.outcome }}" = "success"
+          test "${{ steps.docker_smoke.outcome }}" = "success"
