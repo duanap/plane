@@ -15,8 +15,20 @@ function cloneFleet(fleet: Plane[]): Plane[] {
   return fleet.map(clonePlane);
 }
 
+function fallbackFleet(prefix: string): Plane[] {
+  return [
+    { id: `${prefix}1`, head: { x: 2, y: 0 }, direction: 'UP', destroyed: false },
+    { id: `${prefix}2`, head: { x: 7, y: 0 }, direction: 'UP', destroyed: false },
+    { id: `${prefix}3`, head: { x: 4, y: 5 }, direction: 'DOWN', destroyed: false },
+  ];
+}
+
 export function createPlacementFleet(prefix = 'p', random = Math.random): Plane[] {
-  return randomFleet(prefix, random);
+  try {
+    return randomFleet(prefix, random);
+  } catch {
+    return fallbackFleet(prefix);
+  }
 }
 
 export function planeAt(fleet: Plane[], position: Position): Plane | undefined {
