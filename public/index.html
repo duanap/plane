@@ -4,13 +4,36 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#08111f" />
-  <title>炸飞机</title>
+  <title>炸飞机 · 选择模式</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
-  <a class="mode-link" href="/online.html" style="right:126px">在线对战</a>
-  <a class="mode-link" href="/ai.html">人机练习</a>
-  <main id="app"></main>
-  <script type="module" src="/web/main.js"></script>
+<body class="mode-home-body">
+  <main class="mode-home">
+    <section class="mode-hero">
+      <div class="mode-kicker">PLANE · 10×10 坐标推理对战</div>
+      <h1>炸飞机</h1>
+      <p>选择一种方式开始。每局 3 架战机，找到并击中全部机头即可获胜。</p>
+    </section>
+    <section class="mode-grid" aria-label="游戏模式">
+      <a class="mode-card" href="/local.html">
+        <span class="mode-icon" aria-hidden="true">🎮</span>
+        <strong>本地双人</strong>
+        <span>同一台设备轮流部署与攻击，带隐私交接。</span>
+        <em>开始本地对战 →</em>
+      </a>
+      <a class="mode-card featured" href="/online.html">
+        <span class="mode-icon" aria-hidden="true">🌐</span>
+        <strong>在线对战</strong>
+        <span>创建房间并邀请朋友，在两台设备实时对战。</span>
+        <em>创建或加入房间 →</em>
+      </a>
+      <a class="mode-card" href="/ai.html">
+        <span class="mode-icon" aria-hidden="true">🤖</span>
+        <strong>AI 练习</strong>
+        <span>简单、普通、困难三档 AI，均不读取隐藏布局。</span>
+        <em>选择难度练习 →</em>
+      </a>
+    </section>
+  </main>
 </body>
 </html>
