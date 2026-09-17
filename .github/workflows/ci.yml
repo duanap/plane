@@ -30,10 +30,16 @@ jobs:
         run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Test
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/plane-test.log
 
       - name: Build
-        run: npm run build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/plane-build.log
 
       - name: Smoke built server
         shell: bash
@@ -97,3 +103,14 @@ jobs:
           done
           docker inspect plane-ci-run
           exit 1
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plane-ci-diagnostics
+          path: |
+            /tmp/plane-test.log
+            /tmp/plane-build.log
+            /tmp/plane-server.log
+          if-no-files-found: ignore
