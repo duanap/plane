@@ -11,7 +11,7 @@ const contentTypes = {
   '.png': 'image/png',
 };
 
-const compiledModulePrefixes = ['/web/', '/game/', '/online/', '/ai/'];
+const compiledModulePrefixes = ['/web/', '/game/', '/online/', '/ai/', '/local/'];
 
 class HttpError extends Error {
   constructor(status, code, message) {
@@ -140,7 +140,13 @@ export function createPlaneServer({ store, root, heartbeatMs = 25_000, cleanupMs
       }
 
       if (pathname === '/api/rooms' && req.method === 'POST') {
-        const identity = store.createRoom();
+        const body = await readJson(req);
+        if (body.revealDestroyedPlane !== undefined && typeof body.revealDestroyedPlane !== 'boolean') {
+          throw new HttpError(400, 'INVALID_RULES', 'revealDestroyedPlane must be a boolean.');
+        }
+        const identity = store.createRoom({
+          revealDestroyedPlane: body.revealDestroyedPlane ?? true,
+        });
         sendJson(res, 201, { ok: true, identity });
         return;
       }
