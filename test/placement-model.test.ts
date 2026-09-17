@@ -25,9 +25,9 @@ test('planeAt resolves any occupied body or head cell to its plane', () => {
 
 test('drag candidate preserves the grabbed cell offset from the head', () => {
   const grabbed = { x: 0, y: 1 }; // p1 body cell, offset -2,+1 from head 2,0
-  const result = dragCandidate(fleet, 'p1', grabbed, { x: 2, y: 4 });
+  const result = dragCandidate(fleet, 'p1', grabbed, { x: 5, y: 5 });
   const moved = result.fleet.find((plane) => plane.id === 'p1')!;
-  assert.deepEqual(moved.head, { x: 4, y: 3 });
+  assert.deepEqual(moved.head, { x: 7, y: 4 });
   assert.equal(result.valid, true);
 });
 
@@ -42,8 +42,8 @@ test('illegal drag is exposed as invalid without mutating the original fleet', (
 test('legal rotation turns one plane clockwise and illegal rotation is rejected', () => {
   const legalFleet: Plane[] = [
     { id: 'r1', head: { x: 4, y: 4 }, direction: 'UP', destroyed: false },
-    { id: 'r2', head: { x: 8, y: 0 }, direction: 'RIGHT', destroyed: false },
-    { id: 'r3', head: { x: 1, y: 8 }, direction: 'LEFT', destroyed: false },
+    { id: 'r2', head: { x: 5, y: 0 }, direction: 'UP', destroyed: false },
+    { id: 'r3', head: { x: 7, y: 3 }, direction: 'UP', destroyed: false },
   ];
   assert.equal(validatePlacement(legalFleet).valid, true);
   const legal = rotateCandidate(legalFleet, 'r1');
