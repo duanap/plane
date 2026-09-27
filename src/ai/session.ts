@@ -25,6 +25,7 @@ export interface CreateAiSessionOptions {
   random?: () => number;
   firstPlayerId?: 'HUMAN' | 'AI';
   aiFleet?: Plane[];
+  revealDestroyedPlane?: boolean;
 }
 
 export interface HumanAttackOutcome {
@@ -49,12 +50,18 @@ function cloneObservation(observation: AiObservation): AiObservation {
   };
 }
 
-function toObservation(position: Position, result: AttackResult): AiObservation {
+function toObservation(
+  position: Position,
+  result: AttackResult,
+  revealDestroyedPlane: boolean,
+): AiObservation {
   if (result.kind === 'DESTROYED') {
     return {
       position: { ...position },
       kind: result.kind,
-      revealedCells: result.revealedCells.map((cell) => ({ ...cell, position: { ...cell.position } })),
+      ...(revealDestroyedPlane ? {
+        revealedCells: result.revealedCells.map((cell) => ({ ...cell, position: { ...cell.position } })),
+      } : {}),
     };
   }
   return { position: { ...position }, kind: result.kind };
@@ -81,7 +88,7 @@ export function createAiSession(
     game: createGame([
       { id: 'HUMAN', planes: humanFleet },
       { id: 'AI', planes: aiFleet },
-    ], firstPlayerId),
+    ], firstPlayerId, { revealDestroyedPlane: options.revealDestroyedPlane ?? true }),
     aiObservations: [],
     random,
   };
@@ -108,7 +115,7 @@ export function runAiTurn(session: AiSessionState): AiTurnOutcome {
   }
   const position = chooseAiAttack(session.difficulty, session.aiObservations, session.random);
   const outcome = attack(session.game, position);
-  const observation = toObservation(position, outcome.result);
+  const observation = toObservation(position, outcome.result, outcome.game.options.revealDestroyedPlane);
   return {
     session: {
       ...session,

@@ -5,6 +5,10 @@ import type { Plane, Position } from '../game/types.ts';
 export type PlayerId = 'A' | 'B';
 export type RoomStatus = 'WAITING' | 'PLACEMENT' | 'PLAYING' | 'FINISHED';
 
+export interface RoomRules {
+  revealDestroyedPlane: boolean;
+}
+
 export type RoomErrorCode =
   | 'ROOM_NOT_FOUND'
   | 'ROOM_FULL'
@@ -40,6 +44,7 @@ interface Room {
   id: string;
   status: RoomStatus;
   players: { A: Seat; B?: Seat };
+  rules: RoomRules;
   game?: GameState;
   lastActivityAt: number;
 }
@@ -56,7 +61,7 @@ export interface PublicDestroyedPlane {
 export type PublicAttackResult =
   | { kind: 'MISS' }
   | { kind: 'HIT' }
-  | { kind: 'DESTROYED'; revealedCells: PublicPlaneCell[] };
+  | { kind: 'DESTROYED'; revealedCells?: PublicPlaneCell[] };
 
 export interface PublicAttackRecord {
   attackerId: string;
@@ -69,6 +74,7 @@ export interface PublicRoomView {
   roomId: string;
   status: RoomStatus;
   playerId: PlayerId;
+  rules: RoomRules;
   players: {
     A: { joined: true; ready: boolean; connected: boolean };
     B: { joined: boolean; ready: boolean; connected: boolean };
@@ -157,7 +163,7 @@ export class RoomStore {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   }
 
-  createRoom(): RoomIdentity {
+  createRoom(options: Partial<RoomRules> = {}): RoomIdentity {
     let roomId = '';
     for (let attempts = 0; attempts < 100; attempts += 1) {
       roomId = normalizeRoomId(this.makeCode());
@@ -171,6 +177,7 @@ export class RoomStore {
       id: roomId,
       status: 'WAITING',
       players: { A: { id: 'A', token, ready: false, rematch: false, connections: 0 } },
+      rules: { revealDestroyedPlane: options.revealDestroyedPlane ?? true },
       lastActivityAt: this.now(),
     };
     this.rooms.set(roomId, room);
@@ -200,7 +207,7 @@ export class RoomStore {
     const ownFleet = ownGamePlayer?.planes ?? seat.fleet;
 
     const opponentRevealedPlanes = (opponentGamePlayer?.planes ?? [])
-      .filter((plane) => room.status === 'FINISHED' || plane.destroyed)
+      .filter((plane) => room.status === 'FINISHED' || (room.rules.revealDestroyedPlane && plane.destroyed))
       .map((plane) => ({
         cells: planeCells(plane).map((cell) => ({ kind: cell.kind, position: { ...cell.position } })),
       }));
@@ -221,6 +228,7 @@ export class RoomStore {
       roomId: room.id,
       status: room.status,
       playerId: seat.id,
+      rules: { ...room.rules },
       players: {
         A: { joined: true, ready: room.players.A.ready, connected: room.players.A.connections > 0 },
         B: {
@@ -248,10 +256,7 @@ export class RoomStore {
       throw new RoomError('INVALID_FLEET', 'Submit exactly three legal, non-overlapping planes.');
     }
     const ids = new Set(fleet.map((plane) => plane.id));
-    if (
-      ids.size !== 3
-      || !validatePlacement(fleet).valid
-    ) {
+    if (ids.size !== 3 || !validatePlacement(fleet).valid) {
       throw new RoomError('INVALID_FLEET', 'Submit exactly three legal, non-overlapping planes.');
     }
     seat.fleet = cloneFleet(fleet);
@@ -274,6 +279,7 @@ export class RoomStore {
           { id: 'B', planes: room.players.B.fleet! },
         ],
         first,
+        room.rules,
       );
       room.status = 'PLAYING';
     }
@@ -294,16 +300,19 @@ export class RoomStore {
       room.game = outcome.game;
       if (room.game.status === 'FINISHED') room.status = 'FINISHED';
       this.markActivity(room);
+      const canReveal = room.rules.revealDestroyedPlane || room.status === 'FINISHED';
       const result: PublicAttackResult = outcome.result.kind === 'MISS'
         ? { kind: 'MISS' }
         : outcome.result.kind === 'HIT'
           ? { kind: 'HIT' }
           : {
               kind: 'DESTROYED',
-              revealedCells: outcome.result.revealedCells.map((cell) => ({
-                kind: cell.kind,
-                position: { ...cell.position },
-              })),
+              ...(canReveal ? {
+                revealedCells: outcome.result.revealedCells.map((cell) => ({
+                  kind: cell.kind,
+                  position: { ...cell.position },
+                })),
+              } : {}),
             };
       return { result };
     } catch (error) {

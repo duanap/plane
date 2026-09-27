@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - dev/v1-core
+      - dev/v1.1-ux
   pull_request:
     branches:
       - main
@@ -18,23 +19,37 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Test
-        run: npm test
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/plane-test.log
 
       - name: Build
-        run: npm run build
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/plane-build.log
 
       - name: Smoke built server
+        id: smoke
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -54,14 +69,20 @@ jobs:
             exit 1
           fi
           grep -q '"ok":true' /tmp/plane-health.json
-          for path in / /online.html /ai.html /web/main.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /web/ai.js /ai/session.js /ai/ai.js; do
+          for path in / /local.html /online.html /ai.html /web/main.js /web/placement-model.js /local/flow.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /web/ai.js /ai/session.js /ai/ai.js; do
             curl -fsS "http://127.0.0.1:4173${path}" >/dev/null
           done
 
       - name: Build Docker image
+        id: docker_build
+        if: steps.tests.outcome == 'success' && steps.build.outcome == 'success'
+        continue-on-error: true
         run: docker build -t plane-ci:${{ github.sha }} .
 
       - name: Smoke Docker image
+        id: docker_smoke
+        if: steps.docker_build.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -80,7 +101,7 @@ jobs:
             exit 1
           fi
           grep -q '"ok":true' /tmp/plane-container-health.json
-          for path in / /online.html /ai.html /web/main.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /web/ai.js /ai/session.js /ai/ai.js; do
+          for path in / /local.html /online.html /ai.html /web/main.js /web/placement-model.js /local/flow.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /web/ai.js /ai/session.js /ai/ai.js; do
             curl -fsS "http://127.0.0.1:4174${path}" >/dev/null
           done
           for attempt in {1..20}; do
@@ -96,3 +117,24 @@ jobs:
           done
           docker inspect plane-ci-run
           exit 1
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: plane-ci-diagnostics
+          path: |
+            /tmp/plane-test.log
+            /tmp/plane-build.log
+            /tmp/plane-server.log
+          if-no-files-found: ignore
+
+      - name: Final gate
+        if: always()
+        shell: bash
+        run: |
+          test "${{ steps.tests.outcome }}" = "success"
+          test "${{ steps.build.outcome }}" = "success"
+          test "${{ steps.smoke.outcome }}" = "success"
+          test "${{ steps.docker_build.outcome }}" = "success"
+          test "${{ steps.docker_smoke.outcome }}" = "success"
