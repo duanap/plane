@@ -44,3 +44,7 @@ Check the documented local health endpoint or page after startup.
 - Preserve focused branches; do not force-push or overwrite the default branch.
 
 See the [official cloud environment guide](https://learn.chatgpt.com/docs/environments/cloud-environments) for environment publication and credentials.
+
+## Earlier server source
+
+The original untracked `_server-source-0be1aefd` directory is preserved in `archives/server-source-0be1aefd.zip`. This is a separate historical source snapshot. Keep the current repository as the active codebase; compare the archive only when needed.
