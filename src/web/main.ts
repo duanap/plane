@@ -4,8 +4,9 @@ import type { Plane, Position } from '../game/types.ts';
 import { defaultFleet } from '../game/fleet-placement.ts';
 import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
 import { boardFrame } from './board.ts';
+import { AttackResultDelay, attackMessage, attackResultHtml, type AttackFeedback } from './attack-result.ts';
 
-type Stage = 'PLACEMENT_A' | 'HANDOFF_B' | 'PLACEMENT_B' | 'HANDOFF_BATTLE' | 'PLAYING' | 'HANDOFF_TURN' | 'FINISHED';
+type Stage = 'PLACEMENT_A' | 'HANDOFF_B' | 'PLACEMENT_B' | 'HANDOFF_BATTLE' | 'PLAYING' | 'ATTACK_RESULT' | 'HANDOFF_TURN' | 'FINISHED';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 if (!app) throw new Error('Missing #app');
@@ -18,6 +19,8 @@ let selectedTarget: Position | null = null;
 let game: GameState | null = null;
 let lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。';
 let nextHandoffPlayer: 'A' | 'B' = 'A';
+let attackFeedback: AttackFeedback | null = null;
+const resultDelay = new AttackResultDelay();
 
 function posKey(position: Position): string { return `${position.x}:${position.y}`; }
 function coord(position: Position): string { return `${String.fromCharCode(65 + position.y)}${position.x + 1}`; }
@@ -57,11 +60,12 @@ function boardHtml(options: { ownPlanes?: Plane[]; attackViewFor?: 'A' | 'B'; in
       if (result === 'DESTROYED') classes.push('destroyed');
       if (revealed.has(key)) classes.push('revealed');
       if (selectedTarget && selectedTarget.x === x && selectedTarget.y === y) classes.push('selected');
+      if (attackFeedback && attackFeedback.position.x === x && attackFeedback.position.y === y) classes.push('last-attack');
       html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" title="${coord(position)}" aria-label="${coord(position)}" ${options.interactive ? '' : 'tabindex="-1"'}></button>`;
     }
   }
   html += '</div>';
-  return boardFrame(html);
+  return boardFrame(html, attackFeedback ? attackResultHtml(attackFeedback, game?.status === 'FINISHED' ? '即将显示对局结果' : `即将进入玩家 ${nextHandoffPlayer} 的回合`) : '');
 }
 
 function shell(content: string, badge: string): string {
@@ -114,25 +118,28 @@ function destroyedCount(targetId: 'A' | 'B'): number {
 
 function renderBattle(): void {
   if (!game) return;
-  const attacker = game.currentPlayerId as 'A' | 'B';
+  const showingResult = stage === 'ATTACK_RESULT' && attackFeedback !== null;
+  const attacker = (showingResult ? attackFeedback!.attackerId : game.currentPlayerId) as 'A' | 'B';
   const defender = attacker === 'A' ? 'B' : 'A';
-  const target = selectedTarget;
+  const target = showingResult ? attackFeedback!.position : selectedTarget;
   const alreadyAttacked = target ? game.attacks.some((r) => r.attackerId === attacker && posKey(r.position) === posKey(target)) : false;
   const targetLabel = target ? coord(target) : '未选择';
 
   app.innerHTML = shell(`<section class="panel game-layout">
     <div class="board-wrap">
       <div class="board-title"><div><span class="eyebrow">BATTLE / 玩家 ${attacker}</span><strong>敌方战场 · 玩家 ${defender}</strong></div><span>已击落 ${destroyedCount(defender)}/3</span></div>
-      ${boardHtml({ attackViewFor: attacker, interactive: true })}
+      ${boardHtml({ attackViewFor: attacker, interactive: !showingResult })}
       <div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div>
     </div>
     <aside class="sidebar">
-      <div class="phase-card"><span class="phase-indicator"></span><div><strong>玩家 ${attacker} 的回合</strong><p>选择坐标，再确认攻击。</p></div></div>
-      <div class="target-card"><span>已锁定坐标</span><strong>${targetLabel === '未选择' ? '—' : targetLabel}</strong><span>已攻击 ${game.attacks.filter((r) => r.attackerId === attacker).length} 次 · 损失 ${destroyedCount(attacker)}/3 架</span></div>
+      <div class="phase-card"><span class="phase-indicator"></span><div><strong>${showingResult ? '攻击结果' : `玩家 ${attacker} 的回合`}</strong><p>${showingResult ? '查看落点反馈后自动继续。' : '选择坐标，再确认攻击。'}</p></div></div>
+      <div class="target-card"><span>${showingResult ? '本次攻击坐标' : '已锁定坐标'}</span><strong>${targetLabel === '未选择' ? '—' : targetLabel}</strong><span>已攻击 ${game.attacks.filter((r) => r.attackerId === attacker).length} 次 · 损失 ${destroyedCount(attacker)}/3 架</span></div>
       <div class="status" role="status">${lastMessage}</div>
-      <div class="controls primary-controls">${button(selectedTarget ? `确认攻击 ${targetLabel} →` : '先在地图上选择目标', 'fire', 'action primary', !selectedTarget || Boolean(alreadyAttacked))}</div>
+      <div class="controls primary-controls">${button(showingResult ? '正在显示攻击结果…' : selectedTarget ? `确认攻击 ${targetLabel} →` : '先在地图上选择目标', 'fire', 'action primary', showingResult || !selectedTarget || Boolean(alreadyAttacked))}</div>
     </aside>
-  </section>`, `玩家 ${attacker} 回合`);
+  </section>`, showingResult ? '攻击结果' : `玩家 ${attacker} 回合`);
+
+  if (showingResult) return;
 
   document.querySelectorAll<HTMLButtonElement>('.cell').forEach((cell) => cell.addEventListener('click', () => {
     selectedTarget = { x: Number(cell.dataset.x), y: Number(cell.dataset.y) };
@@ -141,15 +148,21 @@ function renderBattle(): void {
     render();
   }));
   document.querySelector('#fire')?.addEventListener('click', () => {
-    if (!game || !selectedTarget) return;
+    if (!game || !selectedTarget || stage !== 'PLAYING') return;
     try {
       const outcome = attack(game, selectedTarget);
       game = outcome.game;
-      lastMessage = outcome.result.kind === 'MISS' ? `${targetLabel}：未命中。` : outcome.result.kind === 'HIT' ? `${targetLabel}：命中机身！` : `${targetLabel}：击中机头，敌机被击落！`;
+      attackFeedback = game.attacks.at(-1)!;
+      lastMessage = attackMessage(attackFeedback);
       selectedTarget = null;
-      if (game.status === 'FINISHED') stage = 'FINISHED';
-      else { nextHandoffPlayer = game.currentPlayerId as 'A' | 'B'; stage = 'HANDOFF_TURN'; }
+      nextHandoffPlayer = game.currentPlayerId as 'A' | 'B';
+      stage = 'ATTACK_RESULT';
       render();
+      resultDelay.show(String(game.attacks.length), () => {
+        attackFeedback = null;
+        stage = game?.status === 'FINISHED' ? 'FINISHED' : 'HANDOFF_TURN';
+        render();
+      });
     } catch (error) {
       lastMessage = error instanceof GameRuleError ? error.message : '攻击失败。'; render();
     }
@@ -163,6 +176,7 @@ function renderFinished(): void {
   const hits = winnerAttacks.filter((a) => a.kind !== 'MISS').length;
   app.innerHTML = shell(`<section class="panel result"><h2>玩家 ${winner} 胜利</h2><p class="subtle">成功击落对方全部 3 架战机</p><div class="result-grid"><div class="card">攻击次数<strong>${winnerAttacks.length}</strong></div><div class="card">命中次数<strong>${hits}</strong></div><div class="card">击落战机<strong>3</strong></div></div><div class="controls" style="max-width:360px;margin:0 auto">${button('再来一局', 'restart', 'action primary')}</div></section>`, '战斗结束');
   document.querySelector('#restart')?.addEventListener('click', () => {
+    resultDelay.clear(); attackFeedback = null;
     stage = 'PLACEMENT_A'; fleets = { A: defaultFleet('a'), B: defaultFleet('b') }; placementHistory = { A: [], B: [] }; selectedPlane = { A: 'a1', B: 'b1' }; game = null; selectedTarget = null; lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。'; render();
   });
 }
@@ -172,7 +186,7 @@ function render(): void {
   if (stage === 'HANDOFF_B') return renderHandoff('B', '玩家 A 的布局已隐藏。确认屏幕只由玩家 B 查看后继续。', '开始部署', () => { stage = 'PLACEMENT_B'; lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。'; render(); });
   if (stage === 'HANDOFF_BATTLE') return renderHandoff('A', '双方布局已锁定。下一屏将开始战斗并随机决定先手。', '开始战斗', () => { game = createGame([{ id: 'A', planes: fleets.A }, { id: 'B', planes: fleets.B }]); nextHandoffPlayer = game.currentPlayerId as 'A' | 'B'; stage = 'HANDOFF_TURN'; render(); });
   if (stage === 'HANDOFF_TURN') return renderHandoff(nextHandoffPlayer, lastMessage, '查看战场', () => { lastMessage = '请选择一个未攻击坐标。'; stage = 'PLAYING'; render(); });
-  if (stage === 'PLAYING') return renderBattle();
+  if (stage === 'PLAYING' || stage === 'ATTACK_RESULT') return renderBattle();
   renderFinished();
 }
 

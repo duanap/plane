@@ -52,6 +52,7 @@
 .play-page .status { font-size: 13px; line-height: 1.7; min-height: 44px; padding: 10px 12px; border-left: 2px solid #456780; background: #09182780; border-radius: 0 8px 8px 0; overflow-wrap: anywhere; }
 .play-page .primary-controls button.action { min-height: 52px; font-size: 14px; font-weight: 750; }
 .room-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.room-rule { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0; }
 .play-page .room-actions button.action { font-size: 12px; color: var(--muted); background: transparent; padding: 10px 6px; }
 .target-card { display: grid; place-items: center; gap: 8px; padding: 22px 12px; border-radius: 14px; border: 1px solid var(--line); background: #081827; }
 .target-card > span { color: var(--muted); font-size: 12px; }
