@@ -6,4 +6,4 @@ const root = fileURLToPath(new URL('../dist/', import.meta.url));
 const port = Number(process.env.PORT ?? 4173);
 const store = new RoomStore();
 const server = createPlaneServer({ store, root });
-server.listen(port, '0.0.0.0', () => console.log(`Plane running on http://localhost:${port}`));
+server.listen(port, process.env.HOST ?? '0.0.0.0', () => console.log(`Plane running on http://localhost:${port}`));

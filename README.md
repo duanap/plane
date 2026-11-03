@@ -67,6 +67,8 @@ npm start
 
 服务默认监听 4173 端口。需要更换端口时，可在启动前设置 `PORT` 环境变量；例如 macOS/Linux 使用 `PORT=8080 npm start`，PowerShell 使用 `$env:PORT = "8080"; npm start`。
 
+默认绑定 `0.0.0.0`，可通过 `HOST` 环境变量指定监听地址；服务器通过同机 Nginx 反向代理访问时可设置 `HOST=127.0.0.1`。
+
 ## 项目结构
 
 ```text
