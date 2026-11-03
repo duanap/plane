@@ -3,13 +3,7 @@ import type { PublicRoomView } from './room-store.ts';
 
 export type BoardPerspective = 'ENEMY' | 'OWN';
 
-export function normalizeRoomCode(value: string): string {
-  return value.trim().toUpperCase();
-}
-
-export function isRoomCode(value: string): boolean {
-  return /^[A-HJ-NP-Z2-9]{6}$/.test(normalizeRoomCode(value));
-}
+export { normalizeRoomCode, isRoomCode } from './room-code.ts';
 
 export function coordLabel(position: Position): string {
   return `${String.fromCharCode(65 + position.y)}${position.x + 1}`;

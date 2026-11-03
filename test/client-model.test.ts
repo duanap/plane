@@ -4,7 +4,7 @@ import { coordLabel, isRoomCode, normalizeRoomCode, canAttackCell, attackClassFo
 import type { PublicRoomView } from '../src/online/room-store.ts';
 
 const view: PublicRoomView = {
-  roomId: 'ABC234',
+  roomId: '012345',
   status: 'PLAYING',
   playerId: 'A',
   players: { A: { joined: true, ready: true, connected: true }, B: { joined: true, ready: true, connected: true } },
@@ -19,8 +19,14 @@ const view: PublicRoomView = {
 };
 
 test('room code input is normalized and validated', () => {
-  assert.equal(normalizeRoomCode(' abc234 '), 'ABC234');
-  assert.equal(isRoomCode('ABC234'), true);
+  assert.equal(normalizeRoomCode(' 012345 '), '012345');
+  assert.equal(isRoomCode('012345'), true);
+  assert.equal(isRoomCode('000000'), true);
+  assert.equal(isRoomCode('123456'), true);
+  assert.equal(isRoomCode(' 012345 '), true);
+  for (const invalid of ['12345', '1234567', 'ABC234', '１２３４５６', '12 345', '12345x', '1e0000', '']) {
+    assert.equal(isRoomCode(invalid), false, invalid);
+  }
   assert.equal(isRoomCode('ABC123'), false);
 });
 

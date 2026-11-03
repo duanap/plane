@@ -1,20 +1,28 @@
 import { planeCells, randomFleet, validatePlacement } from '../game/geometry.ts';
-import type { Direction, Plane, Position } from '../game/types.ts';
+import type { Plane, Position } from '../game/types.ts';
 import { attackClassFor, canAttackCell, coordLabel, isRoomCode, normalizeRoomCode, revealedCellKindFor, type BoardPerspective } from '../online/client-model.ts';
 import type { PlayerId, PublicRoomView, RoomIdentity } from '../online/room-store.ts';
+import { defaultFleet } from '../game/fleet-placement.ts';
+import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
+import { boardFrame } from './board.ts';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
 const STORAGE_KEY = 'plane-online-identity';
-const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT'];
-const directionText: Record<Direction, string> = { UP: '↑ 向上', RIGHT: '→ 向右', DOWN: '↓ 向下', LEFT: '← 向左' };
 const invitedRoom = normalizeRoomCode(new URLSearchParams(location.search).get('room') ?? '');
+let lobbyScreen: 'CHOICE' | 'JOIN' = isRoomCode(invitedRoom) ? 'JOIN' : 'CHOICE';
+let joinDraft = isRoomCode(invitedRoom) ? invitedRoom : '';
+let lobbyBusy = false;
 
 let identity: RoomIdentity | null = loadIdentity();
 let view: PublicRoomView | null = null;
 let eventSource: EventSource | null = null;
 let localFleet: Plane[] = [];
-let placementDirection: Direction = 'UP';
+let selectedPlaneId = '';
+let placementHistory: Plane[][] = [];
+let placementGesture = false;
+let submitting = false;
+let attackPending = false;
 let selectedTarget: Position | null = null;
 let activeBoard: BoardPerspective = 'ENEMY';
 let message = '';
@@ -48,7 +56,11 @@ function leaveRoom(): void {
   identity = null;
   view = null;
   localFleet = [];
+  placementHistory = [];
+  submitting = false;
   selectedTarget = null;
+  lobbyScreen = 'CHOICE';
+  joinDraft = '';
   localStorage.removeItem(STORAGE_KEY);
   history.replaceState(null, '', '/online.html');
   message = '';
@@ -66,17 +78,25 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function applyView(next: PublicRoomView): void {
-  const enteringPlacement = !view || (view.status !== 'PLACEMENT' && next.status === 'PLACEMENT');
+  const enteringPlacement = next.status === 'PLACEMENT' && (!view || view.status !== 'PLACEMENT');
+  const enteringBattle = next.status === 'PLAYING' && view?.status !== 'PLAYING';
   const enteringFinished = Boolean(view && view.status !== 'FINISHED' && next.status === 'FINISHED');
   view = next;
   if (enteringPlacement) {
-    localFleet = next.ownFleet?.map((plane) => ({ ...plane, head: { ...plane.head } })) ?? [];
-    placementDirection = 'UP';
+    localFleet = next.ownFleet?.map((plane) => ({ ...plane, head: { ...plane.head } })) ?? defaultFleet(next.playerId.toLowerCase());
+    selectedPlaneId = localFleet[0].id;
+    placementHistory = [];
     selectedTarget = null;
+    message = next.players[next.playerId].ready ? '布局已锁定，等待对手准备。' : '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。';
   }
   if (enteringFinished) {
     activeBoard = 'ENEMY';
     selectedTarget = null;
+  }
+  if (enteringBattle) {
+    activeBoard = 'ENEMY';
+    selectedTarget = null;
+    message = next.currentPlayerId === next.playerId ? '轮到你了，选择一个坐标并确认攻击。' : '对手正在行动，请稍候。';
   }
   render();
 }
@@ -116,12 +136,12 @@ async function connectIdentity(): Promise<void> {
   }
 }
 
-function button(label: string, id: string, className = 'action', disabled = false): string {
-  return `<button class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
+function button(label: string, id: string, className = 'action', disabled = false, type: 'button' | 'submit' = 'button'): string {
+  return `<button type="${type}" class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
 }
 
-function shell(content: string, badge = '在线对战'): string {
-  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>双人实时坐标推理对战</p></div><div class="top-actions"><a class="text-link" href="/">本地双人</a><span class="badge">${escapeHtml(badge)}</span></div></header>${content}</div>`;
+function shell(content: string, badge = '在线对战', layoutClass = ''): string {
+  return `<div class="shell play-shell ${layoutClass}"><header class="topbar"><div class="brand"><h1><span aria-hidden="true">✈</span> 炸飞机</h1><p>在线对战 · 各自布阵，实时交锋</p></div><div class="top-actions"><span class="badge">${escapeHtml(badge)}</span><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
 }
 
 function posKey(position: Position): string { return `${position.x}:${position.y}`; }
@@ -154,22 +174,7 @@ function boardHtml(perspective: BoardPerspective, interactive: boolean, fleet = 
       html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" title="${coordLabel(position)}" aria-label="${coordLabel(position)}" ${interactive ? '' : 'tabindex="-1"'}></button>`;
     }
   }
-  return html + '</div>';
-}
-
-function placementBoardHtml(): string {
-  const map = ownCellMap(localFleet);
-  let html = '<div class="board">';
-  for (let y = 0; y < 10; y += 1) {
-    for (let x = 0; x < 10; x += 1) {
-      const position = { x, y };
-      const cell = map.get(posKey(position));
-      const classes = ['cell'];
-      if (cell) classes.push('plane', cell.kind === 'HEAD' ? 'head' : 'body');
-      html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" title="${coordLabel(position)}" aria-label="${coordLabel(position)}"></button>`;
-    }
-  }
-  return html + '</div>';
+  return boardFrame(html + '</div>');
 }
 
 function connectionLabel(playerId: PlayerId): string {
@@ -184,37 +189,79 @@ function inviteUrl(): string {
 }
 
 function renderLanding(): void {
-  const prefill = isRoomCode(invitedRoom) ? invitedRoom : '';
+  if (lobbyScreen === 'JOIN') return renderJoin();
   app.innerHTML = shell(`<section class="panel online-home">
-    <div class="online-hero"><div class="handoff-icon">✈️</div><h2>在线双人对战</h2><p class="subtle">创建房间，把链接发给朋友。双方各自在自己的设备部署战机。</p></div>
-    <div class="online-actions">${button('创建房间', 'create-room', 'action primary')}<div class="join-row"><input id="room-code" class="room-input" maxlength="6" autocomplete="off" placeholder="6 位房间码" value="${escapeHtml(prefill)}" />${button('加入房间', 'join-room')}</div><a class="action-link" href="/">返回本地双人模式</a></div>
-    ${message ? `<div class="notice error">${escapeHtml(message)}</div>` : ''}
-  </section>`);
+    <div class="online-hero"><h2>在线双人对战</h2><p class="subtle">创建一场对决，或加入朋友的房间。</p></div>
+    <div class="lobby-choice-grid">
+      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">＋</span><h3>创建房间</h3><p>生成专属的 6 位数字房间号，<br />邀请朋友加入。</p>${button(lobbyBusy ? '正在创建…' : '创建房间', 'create-room', 'action primary', lobbyBusy)}</section>
+      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">→</span><h3>加入房间</h3><p>已经有房间号？<br />输入朋友分享的号码即可加入。</p>${button('加入房间', 'open-join', 'action', lobbyBusy)}</section>
+    </div>
+    ${message ? `<div class="notice error" role="alert">${escapeHtml(message)}</div>` : ''}
+    <a class="action-link lobby-local-link" href="/local.html">切换到本地双人</a>
+  </section>`, '在线对战', 'lobby-shell');
 
+  document.querySelector('#open-join')?.addEventListener('click', () => {
+    lobbyScreen = 'JOIN'; message = ''; render();
+    document.querySelector<HTMLInputElement>('#room-code')?.focus();
+  });
   document.querySelector('#create-room')?.addEventListener('click', async () => {
+    if (lobbyBusy) return;
+    lobbyBusy = true;
+    message = '';
+    render();
     try {
       const body = await api<{ identity: RoomIdentity }>('/api/rooms', { method: 'POST' });
       saveIdentity(body.identity);
       message = '房间已创建，等待另一名玩家加入。';
       await connectIdentity();
-    } catch (error) { message = error instanceof Error ? error.message : '创建失败'; render(); }
+    } catch (error) { message = error instanceof Error ? error.message : '创建失败'; }
+    finally { lobbyBusy = false; render(); }
   });
-  document.querySelector('#join-room')?.addEventListener('click', async () => {
+}
+
+function renderJoin(): void {
+  app.innerHTML = shell(`<section class="panel online-home">
+    <div class="online-hero"><h2>加入房间</h2><p class="subtle">输入朋友分享的 6 位数字房间号。</p></div>
+    <form class="join-form" id="join-form" novalidate>
+      <label for="room-code">房间号</label>
+      <input id="room-code" name="room-code" class="room-input" type="text" inputmode="numeric" pattern="[0-9]{6}" minlength="6" maxlength="6" required autocomplete="off" placeholder="6 位数字房间号" value="${escapeHtml(joinDraft)}" aria-describedby="room-code-help${message ? ' join-error' : ''}" ${message ? 'aria-invalid="true"' : ''} ${lobbyBusy ? 'disabled' : ''} />
+      <p id="room-code-help" class="join-help">请保留开头的 0，完整输入 6 位数字。</p>
+      ${message ? `<div class="notice error" id="join-error" role="alert">${escapeHtml(message)}</div>` : ''}
+      ${button(lobbyBusy ? '正在加入…' : '确认加入', 'join-room', 'action primary', lobbyBusy, 'submit')}
+      ${button('返回在线大厅', 'back-lobby', 'action lobby-back', lobbyBusy)}
+    </form>
+  </section>`, '加入房间', 'lobby-shell');
+
+  document.querySelector<HTMLInputElement>('#room-code')?.addEventListener('input', (event) => {
+    joinDraft = (event.target as HTMLInputElement).value;
+  });
+  document.querySelector('#back-lobby')?.addEventListener('click', () => { lobbyScreen = 'CHOICE'; message = ''; render(); });
+  document.querySelector('#join-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (lobbyBusy) return;
     const input = document.querySelector<HTMLInputElement>('#room-code');
-    const code = normalizeRoomCode(input?.value ?? '');
-    if (!isRoomCode(code)) { message = '请输入正确的 6 位房间码。'; render(); return; }
+    joinDraft = normalizeRoomCode(input?.value ?? joinDraft);
+    if (!isRoomCode(joinDraft)) {
+      message = '请输入 6 位纯数字房间号。'; render();
+      document.querySelector<HTMLInputElement>('#room-code')?.focus();
+      return;
+    }
+    lobbyBusy = true;
+    message = '';
+    render();
     try {
-      const body = await api<{ identity: RoomIdentity }>(`/api/rooms/${code}/join`, { method: 'POST' });
+      const body = await api<{ identity: RoomIdentity }>(`/api/rooms/${joinDraft}/join`, { method: 'POST' });
       saveIdentity(body.identity);
       message = '已加入房间。';
       await connectIdentity();
-    } catch (error) { message = error instanceof Error ? error.message : '加入失败'; render(); }
+    } catch (error) { message = error instanceof Error ? error.message : '加入失败'; }
+    finally { lobbyBusy = false; render(); }
   });
 }
 
 function renderWaiting(): void {
   if (!identity || !view) return;
-  app.innerHTML = shell(`<section class="panel handoff"><div class="handoff-inner"><div class="handoff-icon">📡</div><h2>房间 ${view.roomId}</h2><p class="subtle">把房间码或邀请链接发给另一名玩家。</p><div class="room-code-big">${view.roomId}</div><div class="controls room-controls">${button('复制邀请链接', 'copy-link', 'action primary')}${button('退出房间', 'leave-room')}</div><div class="player-status"><span>玩家 A · ${connectionLabel('A')}</span><span>玩家 B · ${connectionLabel('B')}</span></div>${message ? `<div class="notice">${escapeHtml(message)}</div>` : ''}</div></section>`, `房间 ${view.roomId}`);
+  app.innerHTML = shell(`<section class="panel handoff"><div class="handoff-inner"><div class="handoff-icon">📡</div><h2>房间 ${view.roomId}</h2><p class="subtle">把房间号或邀请链接发给另一名玩家。</p><div class="room-code-big">${view.roomId}</div><div class="controls room-controls">${button('复制邀请链接', 'copy-link', 'action primary')}${button('退出房间', 'leave-room')}</div><div class="player-status"><span>玩家 A · ${connectionLabel('A')}</span><span>玩家 B · ${connectionLabel('B')}</span></div>${message ? `<div class="notice">${escapeHtml(message)}</div>` : ''}</div></section>`, `房间 ${view.roomId}`);
   document.querySelector('#copy-link')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(inviteUrl()); message = '邀请链接已复制。'; } catch { message = inviteUrl(); } render(); });
   document.querySelector('#leave-room')?.addEventListener('click', leaveRoom);
 }
@@ -224,27 +271,33 @@ function renderPlacement(): void {
   const me = view.players[identity.playerId];
   const opponent: PlayerId = identity.playerId === 'A' ? 'B' : 'A';
   const legal = localFleet.length === 3 && validatePlacement(localFleet).valid;
-  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-title"><strong>玩家 ${identity.playerId} · 部署战机</strong><span>${localFleet.length}/3 架</span></div>${placementBoardHtml()}<div class="legend" style="margin-top:12px"><span><i class="dot"></i> 你的战机</span><span>对手无法看到这里</span></div></div><aside class="sidebar"><div class="card"><h3>房间 ${view.roomId}</h3><div class="statline"><span>你</span><b>${me.ready ? '已准备' : connectionLabel(identity.playerId)}</b></div><div class="statline"><span>对手</span><b>${view.players[opponent].ready ? '已准备' : connectionLabel(opponent)}</b></div></div>${me.ready ? `<div class="card status">布局已锁定，等待对手准备。</div>` : `<div class="card"><h3>当前方向</h3><div style="font-size:26px">${directionText[placementDirection]}</div></div><div class="card status">${escapeHtml(message || '点击棋盘放置机头。')}</div><div class="controls">${button('旋转战机 ↻', 'rotate')}${button('随机摆放 3 架', 'random')}${button('撤销最后一架', 'undo', 'action', localFleet.length === 0)}${button('重新摆放', 'reset', 'action danger', localFleet.length === 0)}${button('准备战斗', 'ready', 'action primary', !legal)}</div>`}<div class="controls">${button('复制邀请链接', 'copy-link')}${button('退出房间', 'leave-room')}</div></aside></section>`, `房间 ${view.roomId}`);
+  const locked = me.ready || submitting;
+  app.innerHTML = shell(`<section class="panel game-layout deployment-layout"><div class="board-wrap"><div class="board-title"><div><span class="eyebrow">DEPLOYMENT / 玩家 ${identity.playerId}</span><strong>${locked ? '你的编队已锁定' : '部署你的编队'}</strong></div><span class="board-hint">${locked ? '等待对手准备' : '拖动移动 · 点击旋转'}</span></div>${fleetBoard(localFleet, selectedPlaneId, locked)}<div class="board-footer"><span><i class="dot"></i> 数字标记为机头</span><span>对手无法看到你的布局</span></div></div><aside class="sidebar"><div class="phase-card"><span class="phase-indicator ${locked ? 'waiting' : ''}"></span><div><strong>房间 ${view.roomId}</strong><p>你 · ${locked ? '已锁定' : '布阵中'} / 对手 · ${view.players[opponent].ready ? '已准备' : connectionLabel(opponent)}</p></div></div>${fleetTools(localFleet, selectedPlaneId, placementHistory.length > 0, locked)}<div class="status placement-status" role="status" aria-live="polite">${escapeHtml(message || '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。')}</div><div class="controls primary-controls">${button(submitting ? '正在提交布局…' : me.ready ? '已准备 · 等待对手' : !legal ? '请先消除飞机重叠' : '确认布阵 · 准备战斗 →', 'ready', 'action primary', locked || !legal)}</div><div class="room-actions">${button('复制邀请', 'copy-link')}${button('退出房间', 'leave-room')}</div></aside></section>`, `房间 ${view.roomId}`);
 
-  if (!me.ready) {
-    document.querySelectorAll<HTMLButtonElement>('.cell').forEach((cell) => cell.addEventListener('click', () => {
-      if (localFleet.length >= 3) { message = '已经摆满 3 架飞机。'; render(); return; }
-      const candidate: Plane = { id: `${identity!.playerId.toLowerCase()}${localFleet.length + 1}`, head: { x: Number(cell.dataset.x), y: Number(cell.dataset.y) }, direction: placementDirection, destroyed: false };
-      const validation = validatePlacement([...localFleet, candidate]);
-      if (!validation.valid) message = validation.reason === 'OUT_OF_BOUNDS' ? '这个位置会让飞机出界。' : '这个位置与已有飞机重叠。';
-      else { localFleet = [...localFleet, candidate]; message = `已部署第 ${localFleet.length} 架，机头 ${coordLabel(candidate.head)}。`; }
-      render();
-    }));
-    document.querySelector('#rotate')?.addEventListener('click', () => { placementDirection = directions[(directions.indexOf(placementDirection) + 1) % directions.length]; render(); });
-    document.querySelector('#random')?.addEventListener('click', () => { localFleet = randomFleet(identity!.playerId.toLowerCase()); message = '已生成随机合法布局。'; render(); });
-    document.querySelector('#undo')?.addEventListener('click', () => { localFleet = localFleet.slice(0, -1); message = '已撤销最后一架。'; render(); });
-    document.querySelector('#reset')?.addEventListener('click', () => { localFleet = []; message = '布局已清空。'; render(); });
+  if (!locked) {
+    const updateFleet = (next: Plane[]) => {
+      if (!view || view.status !== 'PLACEMENT' || view.players[identity!.playerId].ready) return;
+      placementHistory.push(localFleet); localFleet = next; render();
+    };
+    bindFleetEditor({ fleet: localFleet, selectedId: selectedPlaneId, onSelect: (id) => { selectedPlaneId = id; }, onChange: updateFleet, onMessage: (next) => {
+      message = next;
+      const status = document.querySelector('.placement-status');
+      if (status) status.textContent = next;
+    }, onGesture: (active) => { placementGesture = active; if (!active) render(); } });
+    document.querySelector('#random')?.addEventListener('click', () => { message = '已生成新的随机布局。'; updateFleet(randomFleet(identity!.playerId.toLowerCase())); });
+    document.querySelector('#undo-placement')?.addEventListener('click', () => { const previous = placementHistory.pop(); if (previous) localFleet = previous; message = '已撤销上一次调整。'; render(); });
+    document.querySelector('#reset')?.addEventListener('click', () => { message = '已恢复初始编队。'; updateFleet(defaultFleet(identity!.playerId.toLowerCase())); });
     document.querySelector('#ready')?.addEventListener('click', async () => {
+      if (submitting || !legal) return;
+      submitting = true;
+      const submittedFleet = localFleet;
+      render();
       try {
-        await api(`/api/rooms/${identity!.roomId}/fleet`, { method: 'POST', body: JSON.stringify({ token: identity!.token, planes: localFleet }) });
+        await api(`/api/rooms/${identity!.roomId}/fleet`, { method: 'POST', body: JSON.stringify({ token: identity!.token, planes: submittedFleet }) });
         const body = await api<{ view: PublicRoomView }>(`/api/rooms/${identity!.roomId}/ready`, { method: 'POST', body: JSON.stringify({ token: identity!.token }) });
-        message = '准备完成。'; applyView(body.view);
-      } catch (error) { message = error instanceof Error ? error.message : '准备失败'; render(); }
+        message = body.view.status === 'PLACEMENT' ? '布局已锁定，等待对手准备。' : ''; applyView(body.view);
+      } catch (error) { message = error instanceof Error ? error.message : '准备失败'; }
+      finally { submitting = false; render(); }
     });
   }
   document.querySelector('#copy-link')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(inviteUrl()); message = '邀请链接已复制。'; } catch { message = inviteUrl(); } render(); });
@@ -257,9 +310,9 @@ function renderBattle(): void {
   const myTurn = view.currentPlayerId === identity.playerId;
   const interactive = activeBoard === 'ENEMY' && myTurn;
   const targetLabel = selectedTarget ? coordLabel(selectedTarget) : '未选择';
-  const canFire = selectedTarget ? canAttackCell(view, selectedTarget) : false;
+  const canFire = !attackPending && interactive && selectedTarget ? canAttackCell(view, selectedTarget) : false;
   const myAttacks = view.attacks.filter((record) => record.attackerId === identity!.playerId);
-  app.innerHTML = shell(`<section class="panel game-layout"><div class="board-wrap"><div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}">敌方战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}">我的战场</button></div><div class="board-title"><strong>${activeBoard === 'ENEMY' ? `敌方战场 · 玩家 ${enemy}` : '我的战场'}</strong><span>${activeBoard === 'ENEMY' ? `已击落 ${view.destroyedCounts[enemy]}/3` : `损失 ${view.destroyedCounts[identity.playerId]}/3`}</span></div>${boardHtml(activeBoard, interactive)}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div></div><aside class="sidebar"><div class="card"><h3>${myTurn ? '你的回合' : '等待对方攻击'}</h3><div class="statline"><span>玩家 A</span><b>${connectionLabel('A')}</b></div><div class="statline"><span>玩家 B</span><b>${connectionLabel('B')}</b></div><div class="statline"><span>目标</span><b>${targetLabel}</b></div><div class="statline"><span>已攻击</span><b>${myAttacks.length} 次</b></div></div><div class="card status">${escapeHtml(message || (myTurn ? '选择敌方一个未攻击坐标。' : '对手行动后会自动更新。'))}</div><div class="controls">${button(selectedTarget ? `攻击 ${targetLabel}` : '请选择目标', 'fire', 'action primary', !canFire)}</div></aside></section>`, myTurn ? '你的回合' : '等待对手');
+  app.innerHTML = shell(`<section class="panel game-layout battle-layout"><div class="board-wrap"><div class="board-title"><div><span class="eyebrow">BATTLE / 房间 ${view.roomId}</span><strong>${activeBoard === 'ENEMY' ? '敌方战场' : '我的战场'}</strong></div><span>${activeBoard === 'ENEMY' ? `已击落 ${view.destroyedCounts[enemy]}/3` : `损失 ${view.destroyedCounts[identity.playerId]}/3`}</span></div><div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}">敌方战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}">我的战场</button></div>${boardHtml(activeBoard, interactive)}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div></div><aside class="sidebar"><div class="phase-card"><span class="phase-indicator ${myTurn ? '' : 'waiting'}"></span><div><strong>${myTurn ? '轮到你攻击' : '对手正在行动'}</strong><p>对手 · ${connectionLabel(enemy)}</p></div></div><div class="target-card"><span>已锁定坐标</span><strong>${selectedTarget ? targetLabel : '—'}</strong><span>已攻击 ${myAttacks.length} 次 · 损失 ${view.destroyedCounts[identity.playerId]}/3 架</span></div><div class="status" role="status">${escapeHtml(message || (myTurn ? '选择敌方一个未攻击坐标。' : '对手行动后会自动更新。'))}</div><div class="controls primary-controls">${button(attackPending ? '攻击中…' : selectedTarget ? `确认攻击 ${targetLabel} →` : myTurn ? '先在地图上选择目标' : '等待对手攻击', 'fire', 'action primary', !canFire)}</div></aside></section>`, myTurn ? '你的回合' : '等待对手');
 
   document.querySelector('#enemy-tab')?.addEventListener('click', () => { activeBoard = 'ENEMY'; render(); });
   document.querySelector('#own-tab')?.addEventListener('click', () => { activeBoard = 'OWN'; selectedTarget = null; render(); });
@@ -272,14 +325,17 @@ function renderBattle(): void {
     }));
   }
   document.querySelector('#fire')?.addEventListener('click', async () => {
-    if (!selectedTarget || !canAttackCell(view!, selectedTarget)) return;
+    if (attackPending || !selectedTarget || activeBoard !== 'ENEMY' || !canAttackCell(view!, selectedTarget)) return;
     const target = selectedTarget;
+    attackPending = true;
+    render();
     try {
       const body = await api<{ view: PublicRoomView; result: { kind: string } }>(`/api/rooms/${identity!.roomId}/attack`, { method: 'POST', body: JSON.stringify({ token: identity!.token, x: target.x, y: target.y }) });
       message = body.result.kind === 'MISS' ? `${coordLabel(target)}：未命中。` : body.result.kind === 'HIT' ? `${coordLabel(target)}：命中机身！` : `${coordLabel(target)}：击中机头，敌机被击落！`;
       selectedTarget = null;
       applyView(body.view);
-    } catch (error) { message = error instanceof Error ? error.message : '攻击失败'; render(); }
+    } catch (error) { message = error instanceof Error ? error.message : '攻击失败'; }
+    finally { attackPending = false; render(); }
   });
 }
 
@@ -304,6 +360,7 @@ function renderFinished(): void {
 }
 
 function render(): void {
+  if (placementGesture) return;
   if (!identity) return renderLanding();
   if (!view) {
     app.innerHTML = shell(`<section class="panel handoff"><div class="handoff-inner"><div class="handoff-icon">📡</div><h2>正在连接房间</h2><p class="subtle">${escapeHtml(message || identity.roomId)}</p></div></section>`, `房间 ${identity.roomId}`);

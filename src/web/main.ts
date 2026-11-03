@@ -1,6 +1,9 @@
 import { attack, createGame, GameRuleError, type GameState } from '../game/game.ts';
 import { planeCells, randomFleet, validatePlacement } from '../game/geometry.ts';
-import type { Direction, Plane, Position } from '../game/types.ts';
+import type { Plane, Position } from '../game/types.ts';
+import { defaultFleet } from '../game/fleet-placement.ts';
+import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
+import { boardFrame } from './board.ts';
 
 type Stage = 'PLACEMENT_A' | 'HANDOFF_B' | 'PLACEMENT_B' | 'HANDOFF_BATTLE' | 'PLAYING' | 'HANDOFF_TURN' | 'FINISHED';
 
@@ -8,15 +11,13 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 if (!app) throw new Error('Missing #app');
 
 let stage: Stage = 'PLACEMENT_A';
-let fleets: Record<'A' | 'B', Plane[]> = { A: [], B: [] };
-let placementDirection: Direction = 'UP';
+let fleets: Record<'A' | 'B', Plane[]> = { A: defaultFleet('a'), B: defaultFleet('b') };
+let placementHistory: Record<'A' | 'B', Plane[][]> = { A: [], B: [] };
+let selectedPlane: Record<'A' | 'B', string> = { A: 'a1', B: 'b1' };
 let selectedTarget: Position | null = null;
 let game: GameState | null = null;
-let lastMessage = '点击棋盘选择机头位置。';
+let lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。';
 let nextHandoffPlayer: 'A' | 'B' = 'A';
-
-const directions: Direction[] = ['UP', 'RIGHT', 'DOWN', 'LEFT'];
-const directionText: Record<Direction, string> = { UP: '↑ 向上', RIGHT: '→ 向右', DOWN: '↓ 向下', LEFT: '← 向左' };
 
 function posKey(position: Position): string { return `${position.x}:${position.y}`; }
 function coord(position: Position): string { return `${String.fromCharCode(65 + position.y)}${position.x + 1}`; }
@@ -60,56 +61,44 @@ function boardHtml(options: { ownPlanes?: Plane[]; attackViewFor?: 'A' | 'B'; in
     }
   }
   html += '</div>';
-  return html;
+  return boardFrame(html);
 }
 
 function shell(content: string, badge: string): string {
-  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>10×10 坐标推理对战</p></div><div class="badge">${badge}</div></header>${content}</div>`;
+  return `<div class="shell play-shell"><header class="topbar"><div class="brand"><h1><span aria-hidden="true">✈</span> 炸飞机</h1><p>本地双人 · 同一设备轮流对战</p></div><div class="top-actions"><span class="badge">${badge}</span><a class="text-link" href="/online.html">在线对战</a><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
 }
 
 function renderPlacement(): void {
   const player = currentPlacementPlayer();
   const fleet = fleets[player];
   const ready = fleet.length === 3 && validatePlacement(fleet).valid;
-  app.innerHTML = shell(`<section class="panel game-layout">
+  app.innerHTML = shell(`<section class="panel game-layout deployment-layout">
     <div class="board-wrap">
-      <div class="board-title"><strong>玩家 ${player} · 部署战机</strong><span>${fleet.length}/3 架</span></div>
-      ${boardHtml({ ownPlanes: fleet, interactive: true })}
-      <div class="legend" style="margin-top:12px"><span><i class="dot"></i> 已部署战机</span><span>机头坐标 + 方向决定整架飞机</span></div>
+      <div class="board-title"><div><span class="eyebrow">DEPLOYMENT / 玩家 ${player}</span><strong>部署你的编队</strong></div><span class="board-hint">拖动移动 · 点击旋转</span></div>
+      ${fleetBoard(fleet, selectedPlane[player])}
+      <div class="board-footer"><span><i class="dot"></i> 数字标记为机头</span><span>仅玩家 ${player} 可见</span></div>
     </div>
     <aside class="sidebar">
-      <div class="card"><h3>当前方向</h3><div style="font-size:26px">${directionText[placementDirection]}</div></div>
-      <div class="card status">${lastMessage}</div>
-      <div class="controls">
-        ${button('旋转战机 ↻', 'rotate')}
-        ${button('随机摆放 3 架', 'random')}
-        ${button('撤销最后一架', 'undo', 'action', fleet.length === 0)}
-        ${button('重新摆放', 'reset', 'action danger', fleet.length === 0)}
-        ${button('准备完成', 'ready', 'action primary', !ready)}
-      </div>
+      <div class="phase-card"><span class="phase-indicator"></span><div><strong>玩家 ${player} 布阵中</strong><p>藏好机头，再交给对方。</p></div></div>
+      ${fleetTools(fleet, selectedPlane[player], placementHistory[player].length > 0)}
+      <div class="status placement-status" role="status" aria-live="polite">${lastMessage}</div>
+      <div class="controls primary-controls">${button(ready ? '确认布阵 · 下一步 →' : '请先消除飞机重叠', 'ready', 'action primary', !ready)}</div>
     </aside>
   </section>`, `玩家 ${player} 部署阶段`);
-
-  document.querySelectorAll<HTMLButtonElement>('.cell').forEach((cell) => cell.addEventListener('click', () => {
-    if (fleet.length >= 3) { lastMessage = '已经摆满 3 架飞机，可撤销或直接准备。'; render(); return; }
-    const candidate: Plane = { id: `${player.toLowerCase()}${fleet.length + 1}`, head: { x: Number(cell.dataset.x), y: Number(cell.dataset.y) }, direction: placementDirection, destroyed: false };
-    const validation = validatePlacement([...fleet, candidate]);
-    if (!validation.valid) {
-      lastMessage = validation.reason === 'OUT_OF_BOUNDS' ? '该位置会让飞机超出战场。' : '该位置与已有飞机重叠。';
-    } else {
-      fleets[player] = [...fleet, candidate];
-      lastMessage = `已部署第 ${fleet.length + 1} 架，机头 ${coord(candidate.head)}。`;
-    }
-    render();
-  }));
-  document.querySelector('#rotate')?.addEventListener('click', () => { placementDirection = directions[(directions.indexOf(placementDirection) + 1) % directions.length]; render(); });
-  document.querySelector('#random')?.addEventListener('click', () => { fleets[player] = randomFleet(player.toLowerCase()); lastMessage = '已生成合法随机布局，可继续调整或准备。'; render(); });
-  document.querySelector('#undo')?.addEventListener('click', () => { fleets[player] = fleet.slice(0, -1); lastMessage = '已撤销最后一架飞机。'; render(); });
-  document.querySelector('#reset')?.addEventListener('click', () => { fleets[player] = []; lastMessage = '布局已清空。'; render(); });
+  const updateFleet = (next: Plane[]) => { placementHistory[player].push(fleets[player]); fleets[player] = next; render(); };
+  bindFleetEditor({ fleet, selectedId: selectedPlane[player], onSelect: (id) => { selectedPlane[player] = id; }, onChange: updateFleet, onMessage: (message) => {
+    lastMessage = message;
+    const status = document.querySelector('.placement-status');
+    if (status) status.textContent = message;
+  } });
+  document.querySelector('#random')?.addEventListener('click', () => { lastMessage = '已生成新的随机布局。'; updateFleet(randomFleet(player.toLowerCase())); });
+  document.querySelector('#undo-placement')?.addEventListener('click', () => { const previous = placementHistory[player].pop(); if (previous) fleets[player] = previous; lastMessage = '已撤销上一次调整。'; render(); });
+  document.querySelector('#reset')?.addEventListener('click', () => { lastMessage = '已恢复初始编队。'; updateFleet(defaultFleet(player.toLowerCase())); });
   document.querySelector('#ready')?.addEventListener('click', () => {
+    if (!ready) return;
     if (player === 'A') { stage = 'HANDOFF_B'; lastMessage = '轮到玩家 B 部署。'; }
     else { stage = 'HANDOFF_BATTLE'; lastMessage = '双方部署完成。'; }
-    placementDirection = 'UP'; render();
+    render();
   });
 }
 
@@ -133,14 +122,15 @@ function renderBattle(): void {
 
   app.innerHTML = shell(`<section class="panel game-layout">
     <div class="board-wrap">
-      <div class="board-title"><strong>敌方战场 · 玩家 ${defender}</strong><span>敌机已击落 ${destroyedCount(defender)}/3</span></div>
+      <div class="board-title"><div><span class="eyebrow">BATTLE / 玩家 ${attacker}</span><strong>敌方战场 · 玩家 ${defender}</strong></div><span>已击落 ${destroyedCount(defender)}/3</span></div>
       ${boardHtml({ attackViewFor: attacker, interactive: true })}
       <div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div>
     </div>
     <aside class="sidebar">
-      <div class="card"><h3>玩家 ${attacker} 的回合</h3><div class="statline"><span>目标坐标</span><b>${targetLabel}</b></div><div class="statline"><span>已攻击</span><b>${game.attacks.filter((r) => r.attackerId === attacker).length} 次</b></div></div>
-      <div class="card status">${lastMessage}</div>
-      <div class="controls">${button(selectedTarget ? `攻击 ${targetLabel}` : '请选择目标', 'fire', 'action primary', !selectedTarget || Boolean(alreadyAttacked))}</div>
+      <div class="phase-card"><span class="phase-indicator"></span><div><strong>玩家 ${attacker} 的回合</strong><p>选择坐标，再确认攻击。</p></div></div>
+      <div class="target-card"><span>已锁定坐标</span><strong>${targetLabel === '未选择' ? '—' : targetLabel}</strong><span>已攻击 ${game.attacks.filter((r) => r.attackerId === attacker).length} 次 · 损失 ${destroyedCount(attacker)}/3 架</span></div>
+      <div class="status" role="status">${lastMessage}</div>
+      <div class="controls primary-controls">${button(selectedTarget ? `确认攻击 ${targetLabel} →` : '先在地图上选择目标', 'fire', 'action primary', !selectedTarget || Boolean(alreadyAttacked))}</div>
     </aside>
   </section>`, `玩家 ${attacker} 回合`);
 
@@ -173,13 +163,13 @@ function renderFinished(): void {
   const hits = winnerAttacks.filter((a) => a.kind !== 'MISS').length;
   app.innerHTML = shell(`<section class="panel result"><h2>玩家 ${winner} 胜利</h2><p class="subtle">成功击落对方全部 3 架战机</p><div class="result-grid"><div class="card">攻击次数<strong>${winnerAttacks.length}</strong></div><div class="card">命中次数<strong>${hits}</strong></div><div class="card">击落战机<strong>3</strong></div></div><div class="controls" style="max-width:360px;margin:0 auto">${button('再来一局', 'restart', 'action primary')}</div></section>`, '战斗结束');
   document.querySelector('#restart')?.addEventListener('click', () => {
-    stage = 'PLACEMENT_A'; fleets = { A: [], B: [] }; game = null; selectedTarget = null; placementDirection = 'UP'; lastMessage = '点击棋盘选择机头位置。'; render();
+    stage = 'PLACEMENT_A'; fleets = { A: defaultFleet('a'), B: defaultFleet('b') }; placementHistory = { A: [], B: [] }; selectedPlane = { A: 'a1', B: 'b1' }; game = null; selectedTarget = null; lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。'; render();
   });
 }
 
 function render(): void {
   if (stage === 'PLACEMENT_A' || stage === 'PLACEMENT_B') return renderPlacement();
-  if (stage === 'HANDOFF_B') return renderHandoff('B', '玩家 A 的布局已隐藏。确认屏幕只由玩家 B 查看后继续。', '开始部署', () => { stage = 'PLACEMENT_B'; render(); });
+  if (stage === 'HANDOFF_B') return renderHandoff('B', '玩家 A 的布局已隐藏。确认屏幕只由玩家 B 查看后继续。', '开始部署', () => { stage = 'PLACEMENT_B'; lastMessage = '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。'; render(); });
   if (stage === 'HANDOFF_BATTLE') return renderHandoff('A', '双方布局已锁定。下一屏将开始战斗并随机决定先手。', '开始战斗', () => { game = createGame([{ id: 'A', planes: fleets.A }, { id: 'B', planes: fleets.B }]); nextHandoffPlayer = game.currentPlayerId as 'A' | 'B'; stage = 'HANDOFF_TURN'; render(); });
   if (stage === 'HANDOFF_TURN') return renderHandoff(nextHandoffPlayer, lastMessage, '查看战场', () => { lastMessage = '请选择一个未攻击坐标。'; stage = 'PLAYING'; render(); });
   if (stage === 'PLAYING') return renderBattle();
