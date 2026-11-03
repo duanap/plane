@@ -5,6 +5,8 @@ import type { PlayerId, PublicRoomView, RoomIdentity } from '../online/room-stor
 import { defaultFleet } from '../game/fleet-placement.ts';
 import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
 import { boardFrame } from './board.ts';
+import { AttackPlayback } from '../online/attack-playback.ts';
+import { AttackResultDelay, attackMessage, attackResultHtml } from './attack-result.ts';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -13,6 +15,7 @@ const invitedRoom = normalizeRoomCode(new URLSearchParams(location.search).get('
 let lobbyScreen: 'CHOICE' | 'JOIN' = isRoomCode(invitedRoom) ? 'JOIN' : 'CHOICE';
 let joinDraft = isRoomCode(invitedRoom) ? invitedRoom : '';
 let lobbyBusy = false;
+let revealDestroyedPlanes = false;
 
 let identity: RoomIdentity | null = loadIdentity();
 let view: PublicRoomView | null = null;
@@ -26,6 +29,8 @@ let attackPending = false;
 let selectedTarget: Position | null = null;
 let activeBoard: BoardPerspective = 'ENEMY';
 let message = '';
+const playback = new AttackPlayback();
+const resultDelay = new AttackResultDelay();
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]!);
@@ -51,6 +56,8 @@ function saveIdentity(next: RoomIdentity): void {
 }
 
 function leaveRoom(): void {
+  resultDelay.clear();
+  playback.reset();
   eventSource?.close();
   eventSource = null;
   identity = null;
@@ -61,6 +68,7 @@ function leaveRoom(): void {
   selectedTarget = null;
   lobbyScreen = 'CHOICE';
   joinDraft = '';
+  revealDestroyedPlanes = false;
   localStorage.removeItem(STORAGE_KEY);
   history.replaceState(null, '', '/online.html');
   message = '';
@@ -78,10 +86,12 @@ async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 function applyView(next: PublicRoomView): void {
-  const enteringPlacement = next.status === 'PLACEMENT' && (!view || view.status !== 'PLACEMENT');
-  const enteringBattle = next.status === 'PLAYING' && view?.status !== 'PLAYING';
-  const enteringFinished = Boolean(view && view.status !== 'FINISHED' && next.status === 'FINISHED');
-  view = next;
+  if (!identity || next.roomId !== identity.roomId) return;
+  const previous = playback.latest;
+  if (!playback.update(next)) return;
+  const enteringPlacement = next.status === 'PLACEMENT' && previous?.status !== 'PLACEMENT';
+  const enteringBattle = next.status === 'PLAYING' && previous?.status !== 'PLAYING';
+  const enteringFinished = Boolean(previous && previous.status !== 'FINISHED' && next.status === 'FINISHED');
   if (enteringPlacement) {
     localFleet = next.ownFleet?.map((plane) => ({ ...plane, head: { ...plane.head } })) ?? defaultFleet(next.playerId.toLowerCase());
     selectedPlaneId = localFleet[0].id;
@@ -98,7 +108,28 @@ function applyView(next: PublicRoomView): void {
     selectedTarget = null;
     message = next.currentPlayerId === next.playerId ? '轮到你了，选择一个坐标并确认攻击。' : '对手正在行动，请稍候。';
   }
+  syncAttackPlayback();
   render();
+}
+
+function syncAttackPlayback(): void {
+  view = playback.visibleView;
+  const frame = playback.result;
+  if (frame && identity) {
+    activeBoard = frame.attack.attackerId === identity.playerId ? 'ENEMY' : 'OWN';
+    selectedTarget = null;
+    message = attackMessage(frame.attack, view?.settings?.revealDestroyedPlanes ?? false);
+  }
+  resultDelay.show(frame?.key ?? null, () => {
+    if (!frame || !playback.advance(frame.key)) return;
+    syncAttackPlayback();
+    if (!playback.result && view && identity && view.status === 'PLAYING') {
+      const myTurn = view.currentPlayerId === identity.playerId;
+      if (myTurn) activeBoard = 'ENEMY';
+      message = myTurn ? '轮到你了，选择一个坐标并确认攻击。' : '对手正在行动，请稍候。';
+    }
+    render();
+  });
 }
 
 async function refreshState(): Promise<void> {
@@ -128,6 +159,8 @@ async function connectIdentity(): Promise<void> {
     await refreshState();
     openEvents();
   } catch (error) {
+    resultDelay.clear();
+    playback.reset();
     message = error instanceof Error ? error.message : '无法恢复房间';
     localStorage.removeItem(STORAGE_KEY);
     identity = null;
@@ -165,16 +198,21 @@ function boardHtml(perspective: BoardPerspective, interactive: boolean, fleet = 
       const classes = ['cell'];
       const ownCell = own.get(key);
       const attackClass = attackClassFor(view, perspective, position);
-      const revealedKind = revealedCellKindFor(view, perspective, position);
+      const hideFinalOutline = playback.result && !view.settings?.revealDestroyedPlanes && view.status === 'FINISHED';
+      const revealedKind = hideFinalOutline ? undefined : revealedCellKindFor(view, perspective, position);
       if (ownCell) classes.push('plane', ownCell.kind === 'HEAD' ? 'head' : 'body');
       if (ownCell?.destroyed) classes.push('revealed');
       if (attackClass) classes.push(attackClass);
       if (revealedKind) classes.push('revealed', revealedKind === 'HEAD' ? 'revealed-head' : 'revealed-body');
       if (perspective === 'ENEMY' && selectedTarget && posKey(selectedTarget) === key) classes.push('selected');
+      const result = playback.result?.attack;
+      if (result && posKey(result.position) === key) classes.push('last-attack');
       html += `<button class="${classes.join(' ')}" data-x="${x}" data-y="${y}" title="${coordLabel(position)}" aria-label="${coordLabel(position)}" ${interactive ? '' : 'tabindex="-1"'}></button>`;
     }
   }
-  return boardFrame(html + '</div>');
+  const result = playback.result?.attack;
+  const next = view.status === 'FINISHED' ? '即将显示对局结果' : view.currentPlayerId === identity?.playerId ? '即将轮到你攻击' : '即将进入对手回合';
+  return boardFrame(html + '</div>', result ? attackResultHtml(result, next, view.settings?.revealDestroyedPlanes ?? false) : '');
 }
 
 function connectionLabel(playerId: PlayerId): string {
@@ -188,29 +226,37 @@ function inviteUrl(): string {
   return identity ? `${location.origin}/online.html?room=${identity.roomId}` : location.href;
 }
 
+function roomRuleHtml(): string {
+  return `<p class="room-rule">机头命中后：${view?.settings?.revealDestroyedPlanes ? '显示完整机身轮廓' : '仅保留机头标记'}</p>`;
+}
+
 function renderLanding(): void {
   if (lobbyScreen === 'JOIN') return renderJoin();
   app.innerHTML = shell(`<section class="panel online-home">
     <div class="online-hero"><h2>在线双人对战</h2><p class="subtle">创建一场对决，或加入朋友的房间。</p></div>
     <div class="lobby-choice-grid">
-      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">＋</span><h3>创建房间</h3><p>生成专属的 6 位数字房间号，<br />邀请朋友加入。</p>${button(lobbyBusy ? '正在创建…' : '创建房间', 'create-room', 'action primary', lobbyBusy)}</section>
+      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">＋</span><h3>创建房间</h3><p>生成专属的 6 位数字房间号，<br />邀请朋友加入。</p><label class="room-setting"><input id="reveal-outline" type="checkbox" ${revealDestroyedPlanes ? 'checked' : ''} ${lobbyBusy ? 'disabled' : ''} /><span>击中机头后显示完整轮廓<small>默认关闭，仅保留机头标记</small></span></label>${button(lobbyBusy ? '正在创建…' : '创建房间', 'create-room', 'action primary', lobbyBusy)}</section>
       <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">→</span><h3>加入房间</h3><p>已经有房间号？<br />输入朋友分享的号码即可加入。</p>${button('加入房间', 'open-join', 'action', lobbyBusy)}</section>
     </div>
     ${message ? `<div class="notice error" role="alert">${escapeHtml(message)}</div>` : ''}
     <a class="action-link lobby-local-link" href="/local.html">切换到本地双人</a>
   </section>`, '在线对战', 'lobby-shell');
 
+  document.querySelector<HTMLInputElement>('#reveal-outline')?.addEventListener('change', (event) => {
+    revealDestroyedPlanes = (event.target as HTMLInputElement).checked;
+  });
   document.querySelector('#open-join')?.addEventListener('click', () => {
     lobbyScreen = 'JOIN'; message = ''; render();
     document.querySelector<HTMLInputElement>('#room-code')?.focus();
   });
   document.querySelector('#create-room')?.addEventListener('click', async () => {
     if (lobbyBusy) return;
+    revealDestroyedPlanes = document.querySelector<HTMLInputElement>('#reveal-outline')?.checked ?? false;
     lobbyBusy = true;
     message = '';
     render();
     try {
-      const body = await api<{ identity: RoomIdentity }>('/api/rooms', { method: 'POST' });
+      const body = await api<{ identity: RoomIdentity }>('/api/rooms', { method: 'POST', body: JSON.stringify({ settings: { revealDestroyedPlanes } }) });
       saveIdentity(body.identity);
       message = '房间已创建，等待另一名玩家加入。';
       await connectIdentity();
@@ -261,7 +307,7 @@ function renderJoin(): void {
 
 function renderWaiting(): void {
   if (!identity || !view) return;
-  app.innerHTML = shell(`<section class="panel handoff"><div class="handoff-inner"><div class="handoff-icon">📡</div><h2>房间 ${view.roomId}</h2><p class="subtle">把房间号或邀请链接发给另一名玩家。</p><div class="room-code-big">${view.roomId}</div><div class="controls room-controls">${button('复制邀请链接', 'copy-link', 'action primary')}${button('退出房间', 'leave-room')}</div><div class="player-status"><span>玩家 A · ${connectionLabel('A')}</span><span>玩家 B · ${connectionLabel('B')}</span></div>${message ? `<div class="notice">${escapeHtml(message)}</div>` : ''}</div></section>`, `房间 ${view.roomId}`);
+  app.innerHTML = shell(`<section class="panel handoff"><div class="handoff-inner"><div class="handoff-icon">📡</div><h2>房间 ${view.roomId}</h2><p class="subtle">把房间号或邀请链接发给另一名玩家。</p>${roomRuleHtml()}<div class="room-code-big">${view.roomId}</div><div class="controls room-controls">${button('复制邀请链接', 'copy-link', 'action primary')}${button('退出房间', 'leave-room')}</div><div class="player-status"><span>玩家 A · ${connectionLabel('A')}</span><span>玩家 B · ${connectionLabel('B')}</span></div>${message ? `<div class="notice">${escapeHtml(message)}</div>` : ''}</div></section>`, `房间 ${view.roomId}`);
   document.querySelector('#copy-link')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(inviteUrl()); message = '邀请链接已复制。'; } catch { message = inviteUrl(); } render(); });
   document.querySelector('#leave-room')?.addEventListener('click', leaveRoom);
 }
@@ -272,7 +318,7 @@ function renderPlacement(): void {
   const opponent: PlayerId = identity.playerId === 'A' ? 'B' : 'A';
   const legal = localFleet.length === 3 && validatePlacement(localFleet).valid;
   const locked = me.ready || submitting;
-  app.innerHTML = shell(`<section class="panel game-layout deployment-layout"><div class="board-wrap"><div class="board-title"><div><span class="eyebrow">DEPLOYMENT / 玩家 ${identity.playerId}</span><strong>${locked ? '你的编队已锁定' : '部署你的编队'}</strong></div><span class="board-hint">${locked ? '等待对手准备' : '拖动移动 · 点击旋转'}</span></div>${fleetBoard(localFleet, selectedPlaneId, locked)}<div class="board-footer"><span><i class="dot"></i> 数字标记为机头</span><span>对手无法看到你的布局</span></div></div><aside class="sidebar"><div class="phase-card"><span class="phase-indicator ${locked ? 'waiting' : ''}"></span><div><strong>房间 ${view.roomId}</strong><p>你 · ${locked ? '已锁定' : '布阵中'} / 对手 · ${view.players[opponent].ready ? '已准备' : connectionLabel(opponent)}</p></div></div>${fleetTools(localFleet, selectedPlaneId, placementHistory.length > 0, locked)}<div class="status placement-status" role="status" aria-live="polite">${escapeHtml(message || '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。')}</div><div class="controls primary-controls">${button(submitting ? '正在提交布局…' : me.ready ? '已准备 · 等待对手' : !legal ? '请先消除飞机重叠' : '确认布阵 · 准备战斗 →', 'ready', 'action primary', locked || !legal)}</div><div class="room-actions">${button('复制邀请', 'copy-link')}${button('退出房间', 'leave-room')}</div></aside></section>`, `房间 ${view.roomId}`);
+  app.innerHTML = shell(`<section class="panel game-layout deployment-layout"><div class="board-wrap"><div class="board-title"><div><span class="eyebrow">DEPLOYMENT / 玩家 ${identity.playerId}</span><strong>${locked ? '你的编队已锁定' : '部署你的编队'}</strong></div><span class="board-hint">${locked ? '等待对手准备' : '拖动移动 · 点击旋转'}</span></div>${fleetBoard(localFleet, selectedPlaneId, locked)}<div class="board-footer"><span><i class="dot"></i> 数字标记为机头</span><span>对手无法看到你的布局</span></div></div><aside class="sidebar"><div class="phase-card"><span class="phase-indicator ${locked ? 'waiting' : ''}"></span><div><strong>房间 ${view.roomId}</strong><p>你 · ${locked ? '已锁定' : '布阵中'} / 对手 · ${view.players[opponent].ready ? '已准备' : connectionLabel(opponent)}</p></div></div>${roomRuleHtml()}${fleetTools(localFleet, selectedPlaneId, placementHistory.length > 0, locked)}<div class="status placement-status" role="status" aria-live="polite">${escapeHtml(message || '已摆好 3 架飞机，拖动调整位置，点击飞机旋转。')}</div><div class="controls primary-controls">${button(submitting ? '正在提交布局…' : me.ready ? '已准备 · 等待对手' : !legal ? '请先消除飞机重叠' : '确认布阵 · 准备战斗 →', 'ready', 'action primary', locked || !legal)}</div><div class="room-actions">${button('复制邀请', 'copy-link')}${button('退出房间', 'leave-room')}</div></aside></section>`, `房间 ${view.roomId}`);
 
   if (!locked) {
     const updateFleet = (next: Plane[]) => {
@@ -307,12 +353,28 @@ function renderPlacement(): void {
 function renderBattle(): void {
   if (!identity || !view) return;
   const enemy: PlayerId = identity.playerId === 'A' ? 'B' : 'A';
-  const myTurn = view.currentPlayerId === identity.playerId;
-  const interactive = activeBoard === 'ENEMY' && myTurn;
-  const targetLabel = selectedTarget ? coordLabel(selectedTarget) : '未选择';
+  const result = playback.result?.attack;
+  const myTurn = !result && view.currentPlayerId === identity.playerId;
+  const interactive = !result && !attackPending && activeBoard === 'ENEMY' && myTurn;
+  const target = result?.position ?? selectedTarget;
+  const targetLabel = target ? coordLabel(target) : '未选择';
   const canFire = !attackPending && interactive && selectedTarget ? canAttackCell(view, selectedTarget) : false;
   const myAttacks = view.attacks.filter((record) => record.attackerId === identity!.playerId);
-  app.innerHTML = shell(`<section class="panel game-layout battle-layout"><div class="board-wrap"><div class="board-title"><div><span class="eyebrow">BATTLE / 房间 ${view.roomId}</span><strong>${activeBoard === 'ENEMY' ? '敌方战场' : '我的战场'}</strong></div><span>${activeBoard === 'ENEMY' ? `已击落 ${view.destroyedCounts[enemy]}/3` : `损失 ${view.destroyedCounts[identity.playerId]}/3`}</span></div><div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}">敌方战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}">我的战场</button></div>${boardHtml(activeBoard, interactive)}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span></div></div><aside class="sidebar"><div class="phase-card"><span class="phase-indicator ${myTurn ? '' : 'waiting'}"></span><div><strong>${myTurn ? '轮到你攻击' : '对手正在行动'}</strong><p>对手 · ${connectionLabel(enemy)}</p></div></div><div class="target-card"><span>已锁定坐标</span><strong>${selectedTarget ? targetLabel : '—'}</strong><span>已攻击 ${myAttacks.length} 次 · 损失 ${view.destroyedCounts[identity.playerId]}/3 架</span></div><div class="status" role="status">${escapeHtml(message || (myTurn ? '选择敌方一个未攻击坐标。' : '对手行动后会自动更新。'))}</div><div class="controls primary-controls">${button(attackPending ? '攻击中…' : selectedTarget ? `确认攻击 ${targetLabel} →` : myTurn ? '先在地图上选择目标' : '等待对手攻击', 'fire', 'action primary', !canFire)}</div></aside></section>`, myTurn ? '你的回合' : '等待对手');
+  app.innerHTML = shell(`<section class="panel game-layout battle-layout">
+    <div class="board-wrap">
+      <div class="board-title"><div><span class="eyebrow">BATTLE / 房间 ${view.roomId}</span><strong>${activeBoard === 'ENEMY' ? '敌方战场' : '我的战场'}</strong></div><span>${activeBoard === 'ENEMY' ? `已击落 ${view.destroyedCounts[enemy]}/3` : `损失 ${view.destroyedCounts[identity.playerId]}/3`}</span></div>
+      <div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}" ${result || attackPending ? 'disabled' : ''}>敌方战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}" ${result || attackPending ? 'disabled' : ''}>我的战场</button></div>
+      ${boardHtml(activeBoard, interactive)}
+      <div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击中机头</span></div>
+    </div>
+    <aside class="sidebar">
+      <div class="phase-card"><span class="phase-indicator ${myTurn ? '' : 'waiting'}"></span><div><strong>${result ? '攻击结果' : myTurn ? '轮到你攻击' : '对手正在行动'}</strong><p>${result ? '查看落点反馈后自动继续。' : `对手 · ${connectionLabel(enemy)}`}</p></div></div>
+      ${roomRuleHtml()}
+      <div class="target-card"><span>${result ? '本次攻击坐标' : '已锁定坐标'}</span><strong>${target ? targetLabel : '—'}</strong><span>已攻击 ${myAttacks.length} 次 · 损失 ${view.destroyedCounts[identity.playerId]}/3 架</span></div>
+      <div class="status" role="status">${escapeHtml(message || (myTurn ? '选择敌方一个未攻击坐标。' : '对手行动后会自动更新。'))}</div>
+      <div class="controls primary-controls">${button(result ? '正在显示攻击结果…' : attackPending ? '攻击中…' : selectedTarget ? `确认攻击 ${targetLabel} →` : myTurn ? '先在地图上选择目标' : '等待对手攻击', 'fire', 'action primary', !canFire)}</div>
+    </aside>
+  </section>`, result ? '攻击结果' : myTurn ? '你的回合' : '等待对手');
 
   document.querySelector('#enemy-tab')?.addEventListener('click', () => { activeBoard = 'ENEMY'; render(); });
   document.querySelector('#own-tab')?.addEventListener('click', () => { activeBoard = 'OWN'; selectedTarget = null; render(); });
@@ -325,16 +387,18 @@ function renderBattle(): void {
     }));
   }
   document.querySelector('#fire')?.addEventListener('click', async () => {
-    if (attackPending || !selectedTarget || activeBoard !== 'ENEMY' || !canAttackCell(view!, selectedTarget)) return;
+    if (playback.result || attackPending || !selectedTarget || activeBoard !== 'ENEMY' || !canAttackCell(view!, selectedTarget)) return;
     const target = selectedTarget;
     attackPending = true;
     render();
     try {
-      const body = await api<{ view: PublicRoomView; result: { kind: string } }>(`/api/rooms/${identity!.roomId}/attack`, { method: 'POST', body: JSON.stringify({ token: identity!.token, x: target.x, y: target.y }) });
-      message = body.result.kind === 'MISS' ? `${coordLabel(target)}：未命中。` : body.result.kind === 'HIT' ? `${coordLabel(target)}：命中机身！` : `${coordLabel(target)}：击中机头，敌机被击落！`;
+      const body = await api<{ view: PublicRoomView }>(`/api/rooms/${identity!.roomId}/attack`, { method: 'POST', body: JSON.stringify({ token: identity!.token, x: target.x, y: target.y }) });
       selectedTarget = null;
       applyView(body.view);
-    } catch (error) { message = error instanceof Error ? error.message : '攻击失败'; }
+    } catch (error) {
+      const confirmed = playback.latest?.attacks.some((record) => record.attackerId === identity?.playerId && posKey(record.position) === posKey(target));
+      if (!confirmed) message = error instanceof Error ? error.message : '攻击失败';
+    }
     finally { attackPending = false; render(); }
   });
 }
@@ -347,7 +411,7 @@ function renderFinished(): void {
   const hits = myAttacks.filter((record) => record.kind !== 'MISS').length;
   const voted = view.rematchVotes[identity.playerId];
   const finalTitle = activeBoard === 'ENEMY' ? `敌方最终战场 · 玩家 ${enemy}` : '我的最终战场';
-  app.innerHTML = shell(`<section class="panel"><div class="result"><h2>${won ? '🎉 你赢了' : '战斗结束'}</h2><p class="subtle">${won ? '你率先击落了对方全部战机。' : `玩家 ${view.winnerId} 获胜。`}</p><div class="result-grid"><div class="card">攻击次数<strong>${myAttacks.length}</strong></div><div class="card">命中次数<strong>${hits}</strong></div><div class="card">击落战机<strong>${view.destroyedCounts[enemy]}</strong></div></div></div><div class="final-board-section"><div class="board-wrap"><div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}">敌方最终战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}">我的最终战场</button></div><div class="board-title"><strong>${finalTitle}</strong><span>完整布局已公开</span></div>${boardHtml(activeBoard, false)}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击落机头</span><span><i class="dot head-dot"></i> 最终机头</span></div></div></div><div class="controls result-controls">${button(voted ? '已申请再来一局' : '再来一局', 'rematch', 'action primary', voted)}${button('退出房间', 'leave-room')}</div>${message ? `<div class="notice result-notice">${escapeHtml(message)}</div>` : ''}</section>`, '战斗结束');
+  app.innerHTML = shell(`<section class="panel"><div class="result"><h2>${won ? '🎉 你赢了' : '战斗结束'}</h2><p class="subtle">${won ? '你率先击落了对方全部战机。' : `玩家 ${view.winnerId} 获胜。`}</p><div class="result-grid"><div class="card">攻击次数<strong>${myAttacks.length}</strong></div><div class="card">命中次数<strong>${hits}</strong></div><div class="card">击落战机<strong>${view.destroyedCounts[enemy]}</strong></div></div></div><div class="final-board-section"><div class="board-wrap"><div class="board-tabs"><button id="enemy-tab" class="tab ${activeBoard === 'ENEMY' ? 'active' : ''}">敌方最终战场</button><button id="own-tab" class="tab ${activeBoard === 'OWN' ? 'active' : ''}">我的最终战场</button></div><div class="board-title"><strong>${finalTitle}</strong><span>完整布局已公开</span></div>${boardHtml(activeBoard, false)}<div class="legend" style="margin-top:12px"><span>○ 未命中</span><span>× 命中机身</span><span>✹ 击中机头</span><span><i class="dot head-dot"></i> 最终机头</span></div></div></div><div class="controls result-controls">${button(voted ? '已申请再来一局' : '再来一局', 'rematch', 'action primary', voted)}${button('退出房间', 'leave-room')}</div>${message ? `<div class="notice result-notice">${escapeHtml(message)}</div>` : ''}</section>`, '战斗结束');
   document.querySelector('#enemy-tab')?.addEventListener('click', () => { activeBoard = 'ENEMY'; render(); });
   document.querySelector('#own-tab')?.addEventListener('click', () => { activeBoard = 'OWN'; render(); });
   document.querySelector('#rematch')?.addEventListener('click', async () => {
@@ -368,7 +432,7 @@ function render(): void {
   }
   if (view.status === 'WAITING') return renderWaiting();
   if (view.status === 'PLACEMENT') return renderPlacement();
-  if (view.status === 'PLAYING') return renderBattle();
+  if (playback.result || view.status === 'PLAYING') return renderBattle();
   renderFinished();
 }
 

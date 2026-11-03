@@ -5,6 +5,9 @@ import { isRoomCode, normalizeRoomCode } from './room-code.ts';
 
 export type PlayerId = 'A' | 'B';
 export type RoomStatus = 'WAITING' | 'PLACEMENT' | 'PLAYING' | 'FINISHED';
+export interface RoomSettings {
+  revealDestroyedPlanes: boolean;
+}
 
 export type RoomErrorCode =
   | 'ROOM_NOT_FOUND'
@@ -12,6 +15,7 @@ export type RoomErrorCode =
   | 'INVALID_TOKEN'
   | 'INVALID_PHASE'
   | 'INVALID_FLEET'
+  | 'INVALID_SETTINGS'
   | 'FLEET_REQUIRED'
   | 'NOT_YOUR_TURN'
   | 'INVALID_COORDINATE'
@@ -40,6 +44,7 @@ interface Seat {
 interface Room {
   id: string;
   status: RoomStatus;
+  settings: RoomSettings;
   players: { A: Seat; B?: Seat };
   game?: GameState;
   lastActivityAt: number;
@@ -68,6 +73,7 @@ export interface PublicAttackRecord {
 
 export interface PublicRoomView {
   roomId: string;
+  settings: RoomSettings;
   status: RoomStatus;
   playerId: PlayerId;
   players: {
@@ -158,7 +164,11 @@ export class RoomStore {
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   }
 
-  createRoom(): RoomIdentity {
+  createRoom(settings: Partial<RoomSettings> = {}): RoomIdentity {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)
+      || (settings.revealDestroyedPlanes !== undefined && typeof settings.revealDestroyedPlanes !== 'boolean')) {
+      throw new RoomError('INVALID_SETTINGS', 'revealDestroyedPlanes must be a boolean.');
+    }
     let roomId = '';
     for (let attempts = 0; attempts < 100; attempts += 1) {
       roomId = normalizeRoomId(this.makeCode());
@@ -171,6 +181,7 @@ export class RoomStore {
     const room: Room = {
       id: roomId,
       status: 'WAITING',
+      settings: { revealDestroyedPlanes: settings.revealDestroyedPlanes ?? false },
       players: { A: { id: 'A', token, ready: false, rematch: false, connections: 0 } },
       lastActivityAt: this.now(),
     };
@@ -203,7 +214,10 @@ export class RoomStore {
     const opponentRevealedPlanes = (opponentGamePlayer?.planes ?? [])
       .filter((plane) => room.status === 'FINISHED' || plane.destroyed)
       .map((plane) => ({
-        cells: planeCells(plane).map((cell) => ({ kind: cell.kind, position: { ...cell.position } })),
+        cells: (room.status === 'FINISHED' || room.settings.revealDestroyedPlanes
+          ? planeCells(plane)
+          : planeCells(plane).filter((cell) => cell.kind === 'HEAD'))
+          .map((cell) => ({ kind: cell.kind, position: { ...cell.position } })),
       }));
 
     const attacks: PublicAttackRecord[] = (room.game?.attacks ?? []).map((record) => ({
@@ -220,6 +234,7 @@ export class RoomStore {
 
     return {
       roomId: room.id,
+      settings: { ...room.settings },
       status: room.status,
       playerId: seat.id,
       players: {
@@ -301,7 +316,7 @@ export class RoomStore {
           ? { kind: 'HIT' }
           : {
               kind: 'DESTROYED',
-              revealedCells: outcome.result.revealedCells.map((cell) => ({
+              revealedCells: outcome.result.revealedCells.filter((cell) => room.settings.revealDestroyedPlanes || cell.kind === 'HEAD').map((cell) => ({
                 kind: cell.kind,
                 position: { ...cell.position },
               })),

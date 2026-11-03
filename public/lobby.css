@@ -5,6 +5,9 @@
 .lobby-choice p { flex: 1; margin: 0 0 22px; font-size: 13px; color: var(--muted); line-height: 1.8; }
 .lobby-choice .action { width: 100%; min-height: 48px; }
 .lobby-local-link { margin-top: 18px; font-size: 13px; }
+.room-setting { display: flex; align-items: flex-start; gap: 9px; width: 100%; margin: 0 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; text-align: left; cursor: pointer; font-size: 12px; line-height: 1.5; }
+.room-setting input { width: 17px; height: 17px; margin: 1px 0 0; flex-shrink: 0; accent-color: var(--accent); }
+.room-setting small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
 .join-form { display: grid; gap: 12px; width: min(420px, 100%); margin: 28px auto 0; }
 .join-form label { color: #d4e8f8; font-size: 14px; }
 .join-form .room-input { min-height: 66px; font-size: 28px; font-variant-numeric: tabular-nums; letter-spacing: .2em; text-indent: .2em; }

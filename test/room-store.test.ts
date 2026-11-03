@@ -23,9 +23,9 @@ function setup(random = () => 0.1) {
   return { store, advance: (ms: number) => { now += ms; } };
 }
 
-function readyGame(random = () => 0.1) {
+function readyGame(random = () => 0.1, revealDestroyedPlanes = false) {
   const { store, advance } = setup(random);
-  store.createRoom();
+  store.createRoom({ revealDestroyedPlanes });
   store.joinRoom('012345');
   store.submitFleet('012345', 'ta', planes('a'));
   store.submitFleet('012345', 'tb', planes('b'));
@@ -122,13 +122,16 @@ test('attack coordinates must be integer board cells and duplicate attacks are r
   );
 });
 
-test('destroyed opponent plane footprint becomes public only after head is hit', () => {
+test('default rooms reveal only the destroyed head while retaining the attack marker', () => {
   const { store } = readyGame(() => 0.1);
   const outcome = store.attack('012345', 'ta', { x: 2, y: 0 });
   assert.equal(outcome.result.kind, 'DESTROYED');
   const viewA = store.getView('012345', 'ta');
   assert.equal(viewA.opponentRevealedPlanes.length, 1);
-  assert.equal(viewA.opponentRevealedPlanes[0].cells.length, 10);
+  assert.deepEqual(viewA.opponentRevealedPlanes[0].cells, [{ kind: 'HEAD', position: { x: 2, y: 0 } }]);
+  assert.equal(viewA.attacks[0].kind, 'DESTROYED');
+  assert.deepEqual(viewA.attacks[0].position, { x: 2, y: 0 });
+  assert.equal(viewA.settings.revealDestroyedPlanes, false);
   assert.equal(JSON.stringify(viewA.opponentRevealedPlanes).includes('b1'), false);
 });
 
@@ -149,7 +152,7 @@ test('destroying all three heads finishes the room and exposes the winner', () =
 });
 
 test('two rematch votes reset placement state without changing player tokens', () => {
-  const { store } = readyGame(() => 0.1);
+  const { store } = readyGame(() => 0.1, true);
   store.attack('012345', 'ta', { x: 2, y: 0 });
   store.attack('012345', 'tb', { x: 0, y: 9 });
   store.attack('012345', 'ta', { x: 7, y: 0 });
@@ -164,6 +167,7 @@ test('two rematch votes reset placement state without changing player tokens', (
   assert.equal(view.players.A.ready, false);
   assert.equal(view.players.B.ready, false);
   assert.equal(view.rematchVotes.A, false);
+  assert.equal(view.settings.revealDestroyedPlanes, true);
 });
 
 test('inactive rooms are removed after six hours', () => {
@@ -188,8 +192,32 @@ test('attack outcome strips internal plane ids from public result payloads', () 
   assert.equal(destroyed.result.kind, 'DESTROYED');
   assert.equal(JSON.stringify(destroyed).includes('b1'), false);
   if (destroyed.result.kind === 'DESTROYED') {
-    assert.equal(destroyed.result.revealedCells.length, 10);
+    assert.deepEqual(destroyed.result.revealedCells, [{ kind: 'HEAD', position: { x: 2, y: 0 } }]);
   }
+});
+
+test('outline-enabled rooms expose exactly the destroyed plane after head impact', () => {
+  const { store } = readyGame(() => 0.1, true);
+  assert.deepEqual(store.getView('012345', 'ta').opponentRevealedPlanes, []);
+  const outcome = store.attack('012345', 'ta', { x: 2, y: 0 });
+  assert.equal(outcome.result.kind, 'DESTROYED');
+  if (outcome.result.kind === 'DESTROYED') assert.equal(outcome.result.revealedCells.length, 10);
+  const attackerView = store.getView('012345', 'ta');
+  assert.equal(attackerView.opponentRevealedPlanes.length, 1);
+  assert.equal(attackerView.opponentRevealedPlanes[0].cells.length, 10);
+  assert.equal(JSON.stringify(attackerView.opponentRevealedPlanes).includes('b1'), false);
+  assert.equal(store.getView('012345', 'tb').settings.revealDestroyedPlanes, true);
+});
+
+test('room settings are copied and cannot be changed through public views', () => {
+  const { store } = setup();
+  const settings = { revealDestroyedPlanes: true };
+  store.createRoom(settings);
+  settings.revealDestroyedPlanes = false;
+  const publicView = store.getView('012345', 'ta');
+  assert.equal(publicView.settings.revealDestroyedPlanes, true);
+  publicView.settings.revealDestroyedPlanes = false;
+  assert.equal(store.getView('012345', 'ta').settings.revealDestroyedPlanes, true);
 });
 
 test('room allocator rejects letters and accepts a numeric id with a leading zero', () => {

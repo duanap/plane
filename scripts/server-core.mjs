@@ -140,7 +140,8 @@ export function createPlaneServer({ store, root, heartbeatMs = 25_000, cleanupMs
       }
 
       if (pathname === '/api/rooms' && req.method === 'POST') {
-        const identity = store.createRoom();
+        const body = await readJson(req);
+        const identity = store.createRoom(body.settings === undefined ? {} : body.settings);
         sendJson(res, 201, { ok: true, identity });
         return;
       }

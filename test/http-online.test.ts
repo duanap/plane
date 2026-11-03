@@ -201,6 +201,48 @@ test('HTTP attack endpoint resolves turns and returns only public attack data', 
     body: JSON.stringify({ token: 'ta', x: 2, y: 0 }),
   });
   assert.equal(destroyed.body.result.kind, 'DESTROYED');
-  assert.equal(destroyed.body.result.revealedCells.length, 10);
+  assert.deepEqual(destroyed.body.result.revealedCells, [{ kind: 'HEAD', position: { x: 2, y: 0 } }]);
   assert.equal(JSON.stringify(destroyed.body).includes('b1'), false);
 });
+
+test('room creation rejects invalid outline settings before allocating a room', async (t) => {
+  const { server, base } = await startServer();
+  t.after(() => server.close());
+  for (const settings of [null, [], 'true', { revealDestroyedPlanes: 'true' }, { revealDestroyedPlanes: 1 }, { revealDestroyedPlanes: null }]) {
+    const response = await json(base, '/api/rooms', { method: 'POST', body: JSON.stringify({ settings }) });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'INVALID_SETTINGS');
+  }
+  const response = await json(base, '/api/rooms', { method: 'POST' });
+  assert.equal(response.status, 201);
+});
+
+for (const revealDestroyedPlanes of [false, true]) {
+  test(`HTTP and SSE honor outline setting ${revealDestroyedPlanes}`, { timeout: 5000 }, async (t) => {
+    const { server, base } = await startServer();
+    t.after(() => server.close());
+    await json(base, '/api/rooms', { method: 'POST', body: JSON.stringify({ settings: { revealDestroyedPlanes } }) });
+    await json(base, '/api/rooms/012345/join', { method: 'POST' });
+    for (const [token, prefix] of [['ta', 'a'], ['tb', 'b']]) {
+      await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token, planes: planes(prefix) }) });
+      await json(base, '/api/rooms/012345/ready', { method: 'POST', body: JSON.stringify({ token }) });
+    }
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    const stream = await fetch(base + '/api/rooms/012345/events?token=ta', { signal: controller.signal });
+    const reader = stream.body!.getReader();
+    await readEvent(reader);
+    const response = await json(base, '/api/rooms/012345/attack', { method: 'POST', body: JSON.stringify({ token: 'ta', x: 2, y: 0, settings: { revealDestroyedPlanes: !revealDestroyedPlanes } }) });
+    const expectedCells = revealDestroyedPlanes ? 10 : 1;
+    assert.equal(response.body.result.revealedCells.length, expectedCells);
+    assert.equal(response.body.view.settings.revealDestroyedPlanes, revealDestroyedPlanes);
+    assert.equal(response.body.view.opponentRevealedPlanes[0].cells.length, expectedCells);
+    const event = await readEvent(reader);
+    assert.equal(event.view.settings.revealDestroyedPlanes, revealDestroyedPlanes);
+    assert.equal(event.view.opponentRevealedPlanes[0].cells.length, expectedCells);
+    assert.equal(event.view.attacks[0].kind, 'DESTROYED');
+    if (!revealDestroyedPlanes) assert.equal(event.view.opponentRevealedPlanes[0].cells[0].kind, 'HEAD');
+    const defender = await json(base, '/api/rooms/012345/state?token=tb');
+    assert.equal(defender.body.view.settings.revealDestroyedPlanes, revealDestroyedPlanes);
+  });
+}

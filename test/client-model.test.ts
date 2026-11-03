@@ -5,6 +5,7 @@ import type { PublicRoomView } from '../src/online/room-store.ts';
 
 const view: PublicRoomView = {
   roomId: '012345',
+  settings: { revealDestroyedPlanes: false },
   status: 'PLAYING',
   playerId: 'A',
   players: { A: { joined: true, ready: true, connected: true }, B: { joined: true, ready: true, connected: true } },
