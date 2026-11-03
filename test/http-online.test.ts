@@ -18,7 +18,7 @@ function planes(prefix: string): Plane[] {
 }
 
 async function startServer() {
-  const codes = ['ABC234'];
+  const codes = ['012345'];
   const tokens = ['ta', 'tb'];
   const store = new RoomStore({ code: () => codes.shift()!, token: () => tokens.shift()!, random: () => 0.1 });
   const server = createPlaneServer({ store, root: fileURLToPath(new URL('../dist/', import.meta.url)), heartbeatMs: 0, cleanupMs: 0 });
@@ -81,18 +81,18 @@ test('HTTP API creates, joins, places, readies and returns sanitized state', asy
 
   const created = await json(base, '/api/rooms', { method: 'POST' });
   assert.equal(created.status, 201);
-  assert.deepEqual(created.body.identity, { roomId: 'ABC234', playerId: 'A', token: 'ta' });
+  assert.deepEqual(created.body.identity, { roomId: '012345', playerId: 'A', token: 'ta' });
 
-  const joined = await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
+  const joined = await json(base, '/api/rooms/012345/join', { method: 'POST' });
   assert.equal(joined.status, 200);
   assert.equal(joined.body.identity.playerId, 'B');
 
-  await json(base, '/api/rooms/ABC234/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta', planes: planes('a') }) });
-  await json(base, '/api/rooms/ABC234/fleet', { method: 'POST', body: JSON.stringify({ token: 'tb', planes: planes('b') }) });
-  await json(base, '/api/rooms/ABC234/ready', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
-  await json(base, '/api/rooms/ABC234/ready', { method: 'POST', body: JSON.stringify({ token: 'tb' }) });
+  await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta', planes: planes('a') }) });
+  await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token: 'tb', planes: planes('b') }) });
+  await json(base, '/api/rooms/012345/ready', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
+  await json(base, '/api/rooms/012345/ready', { method: 'POST', body: JSON.stringify({ token: 'tb' }) });
 
-  const state = await json(base, '/api/rooms/ABC234/state?token=ta');
+  const state = await json(base, '/api/rooms/012345/state?token=ta');
   assert.equal(state.status, 200);
   assert.equal(state.body.view.status, 'PLAYING');
   assert.equal(state.body.view.currentPlayerId, 'A');
@@ -103,9 +103,22 @@ test('expected room errors use stable JSON error envelopes', async (t) => {
   const { server, base } = await startServer();
   t.after(() => server.close());
   await json(base, '/api/rooms', { method: 'POST' });
-  const response = await json(base, '/api/rooms/ABC234/state?token=bad');
+  const response = await json(base, '/api/rooms/012345/state?token=bad');
   assert.equal(response.status, 403);
   assert.deepEqual(response.body, { ok: false, error: { code: 'INVALID_TOKEN', message: 'Player token is invalid for this room.' } });
+});
+
+test('room endpoints require exactly six ASCII digits', async (t) => {
+  const { server, base } = await startServer();
+  t.after(() => server.close());
+  await json(base, '/api/rooms', { method: 'POST' });
+  for (const code of ['ABC234', '12345', '1234567', '12x345']) {
+    const response = await fetch(`${base}/api/rooms/${code}/join`, { method: 'POST' });
+    assert.equal(response.status, 404, code);
+  }
+  const joined = await json(base, '/api/rooms/012345/join', { method: 'POST' });
+  assert.equal(joined.status, 200);
+  assert.equal(joined.body.identity.roomId, '012345');
 });
 
 test('SSE sends a new player-specific state after another player mutates the room', async (t) => {
@@ -115,13 +128,13 @@ test('SSE sends a new player-specific state after another player mutates the roo
 
   const controller = new AbortController();
   t.after(() => controller.abort());
-  const streamResponse = await fetch(`${base}/api/rooms/ABC234/events?token=ta`, { signal: controller.signal });
+  const streamResponse = await fetch(`${base}/api/rooms/012345/events?token=ta`, { signal: controller.signal });
   assert.equal(streamResponse.status, 200);
   const reader = streamResponse.body!.getReader();
   const initial = await readEvent(reader);
   assert.equal(initial.view.players.B.joined, false);
 
-  await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
+  await json(base, '/api/rooms/012345/join', { method: 'POST' });
   const update = await readEvent(reader);
   assert.equal(update.view.players.B.joined, true);
   assert.equal(update.view.status, 'PLACEMENT');
@@ -131,8 +144,8 @@ test('malformed fleet payload is rejected as a client error instead of crashing 
   const { server, base } = await startServer();
   t.after(() => server.close());
   await json(base, '/api/rooms', { method: 'POST' });
-  await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
-  const response = await json(base, '/api/rooms/ABC234/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
+  await json(base, '/api/rooms/012345/join', { method: 'POST' });
+  const response = await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
   assert.equal(response.status, 400);
   assert.equal(response.body.error.code, 'INVALID_FLEET');
 });
@@ -141,8 +154,8 @@ test('valid JSON with a non-object body is rejected safely instead of producing 
   const { server, base } = await startServer();
   t.after(() => server.close());
   await json(base, '/api/rooms', { method: 'POST' });
-  await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
-  const response = await json(base, '/api/rooms/ABC234/ready', { method: 'POST', body: 'null' });
+  await json(base, '/api/rooms/012345/join', { method: 'POST' });
+  const response = await json(base, '/api/rooms/012345/ready', { method: 'POST', body: 'null' });
   assert.equal(response.status, 403);
   assert.equal(response.body.error.code, 'INVALID_TOKEN');
 });
@@ -151,8 +164,8 @@ test('malformed plane objects are rejected as INVALID_FLEET instead of reaching 
   const { server, base } = await startServer();
   t.after(() => server.close());
   await json(base, '/api/rooms', { method: 'POST' });
-  await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
-  const response = await json(base, '/api/rooms/ABC234/fleet', {
+  await json(base, '/api/rooms/012345/join', { method: 'POST' });
+  const response = await json(base, '/api/rooms/012345/fleet', {
     method: 'POST',
     body: JSON.stringify({ token: 'ta', planes: [null, null, null] }),
   });
@@ -164,13 +177,13 @@ test('HTTP attack endpoint resolves turns and returns only public attack data', 
   const { server, base } = await startServer();
   t.after(() => server.close());
   await json(base, '/api/rooms', { method: 'POST' });
-  await json(base, '/api/rooms/ABC234/join', { method: 'POST' });
-  await json(base, '/api/rooms/ABC234/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta', planes: planes('a') }) });
-  await json(base, '/api/rooms/ABC234/fleet', { method: 'POST', body: JSON.stringify({ token: 'tb', planes: planes('b') }) });
-  await json(base, '/api/rooms/ABC234/ready', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
-  await json(base, '/api/rooms/ABC234/ready', { method: 'POST', body: JSON.stringify({ token: 'tb' }) });
+  await json(base, '/api/rooms/012345/join', { method: 'POST' });
+  await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token: 'ta', planes: planes('a') }) });
+  await json(base, '/api/rooms/012345/fleet', { method: 'POST', body: JSON.stringify({ token: 'tb', planes: planes('b') }) });
+  await json(base, '/api/rooms/012345/ready', { method: 'POST', body: JSON.stringify({ token: 'ta' }) });
+  await json(base, '/api/rooms/012345/ready', { method: 'POST', body: JSON.stringify({ token: 'tb' }) });
 
-  const hit = await json(base, '/api/rooms/ABC234/attack', {
+  const hit = await json(base, '/api/rooms/012345/attack', {
     method: 'POST',
     body: JSON.stringify({ token: 'ta', x: 0, y: 1 }),
   });
@@ -179,11 +192,11 @@ test('HTTP attack endpoint resolves turns and returns only public attack data', 
   assert.equal(hit.body.view.currentPlayerId, 'B');
   assert.equal(JSON.stringify(hit.body).includes('b1'), false);
 
-  await json(base, '/api/rooms/ABC234/attack', {
+  await json(base, '/api/rooms/012345/attack', {
     method: 'POST',
     body: JSON.stringify({ token: 'tb', x: 0, y: 9 }),
   });
-  const destroyed = await json(base, '/api/rooms/ABC234/attack', {
+  const destroyed = await json(base, '/api/rooms/012345/attack', {
     method: 'POST',
     body: JSON.stringify({ token: 'ta', x: 2, y: 0 }),
   });

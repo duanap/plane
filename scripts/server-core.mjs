@@ -145,9 +145,9 @@ export function createPlaneServer({ store, root, heartbeatMs = 25_000, cleanupMs
         return;
       }
 
-      const match = pathname.match(/^\/api\/rooms\/([A-Za-z0-9]{6})\/(join|state|fleet|ready|attack|rematch|events)$/);
+      const match = pathname.match(/^\/api\/rooms\/([0-9]{6})\/(join|state|fleet|ready|attack|rematch|events)$/);
       if (match) {
-        const roomId = match[1].toUpperCase();
+        const roomId = match[1];
         const action = match[2];
 
         if (action === 'join' && req.method === 'POST') {

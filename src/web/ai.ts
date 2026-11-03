@@ -35,7 +35,7 @@ function button(label: string, id: string, className = 'action', disabled = fals
   return `<button class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${label}</button>`;
 }
 function shell(content: string, badge: string): string {
-  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>人机练习 · AI 不读取你的隐藏布局</p></div><div class="top-actions"><a class="text-link" href="/">本地双人</a><a class="text-link" href="/online.html">在线对战</a><div class="badge">${badge}</div></div></header>${content}</div>`;
+  return `<div class="shell"><header class="topbar"><div class="brand"><h1>炸飞机</h1><p>人机练习 · AI 不读取你的隐藏布局</p></div><div class="top-actions"><a class="text-link" href="/">返回首页</a><a class="text-link" href="/local.html">本地双人</a><a class="text-link" href="/online.html">在线对战</a><div class="badge">${badge}</div></div></header>${content}</div>`;
 }
 
 function attackMap(game: GameState, attackerId: 'HUMAN' | 'AI'): Map<string, AttackKind> {

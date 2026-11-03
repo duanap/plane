@@ -1,6 +1,7 @@
 import { attack as resolveAttack, createGame, GameRuleError, type GameState } from '../game/game.ts';
 import { isInsideBoard, planeCells, validatePlacement } from '../game/geometry.ts';
 import type { Plane, Position } from '../game/types.ts';
+import { isRoomCode, normalizeRoomCode } from './room-code.ts';
 
 export type PlayerId = 'A' | 'B';
 export type RoomStatus = 'WAITING' | 'PLACEMENT' | 'PLAYING' | 'FINISHED';
@@ -96,7 +97,7 @@ interface RoomStoreOptions {
   ttlMs?: number;
 }
 
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const CODE_ALPHABET = '0123456789';
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
 
 function secureIndex(max: number): number {
@@ -126,7 +127,7 @@ function cloneFleet(fleet: Plane[] | undefined): Plane[] | undefined {
 }
 
 function normalizeRoomId(roomId: string): string {
-  return roomId.trim().toUpperCase();
+  return normalizeRoomCode(roomId);
 }
 
 function isPlaneInput(value: unknown): value is Plane {
@@ -161,7 +162,7 @@ export class RoomStore {
     let roomId = '';
     for (let attempts = 0; attempts < 100; attempts += 1) {
       roomId = normalizeRoomId(this.makeCode());
-      if (/^[A-HJ-NP-Z2-9]{6}$/.test(roomId) && !this.rooms.has(roomId)) break;
+      if (isRoomCode(roomId) && !this.rooms.has(roomId)) break;
       roomId = '';
     }
     if (!roomId) throw new Error('Unable to allocate a unique room code.');
