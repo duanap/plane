@@ -5,6 +5,7 @@ import { defaultFleet } from '../game/fleet-placement.ts';
 import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
 import { boardFrame } from './board.ts';
 import { AttackResultDelay, attackMessage, attackResultHtml, type AttackFeedback } from './attack-result.ts';
+import { actionLabel, uiIcon } from './neon-ui.ts';
 
 type Stage = 'PLACEMENT_A' | 'HANDOFF_B' | 'PLACEMENT_B' | 'HANDOFF_BATTLE' | 'PLAYING' | 'ATTACK_RESULT' | 'HANDOFF_TURN' | 'FINISHED';
 
@@ -27,7 +28,7 @@ function coord(position: Position): string { return `${String.fromCharCode(65 + 
 function currentPlacementPlayer(): 'A' | 'B' { return stage === 'PLACEMENT_A' ? 'A' : 'B'; }
 
 function button(label: string, id: string, className = 'action', disabled = false): string {
-  return `<button class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${label}</button>`;
+  return `<button type="button" class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${actionLabel(label, id)}</button>`;
 }
 
 function boardHtml(options: { ownPlanes?: Plane[]; attackViewFor?: 'A' | 'B'; interactive?: boolean }): string {
@@ -69,7 +70,7 @@ function boardHtml(options: { ownPlanes?: Plane[]; attackViewFor?: 'A' | 'B'; in
 }
 
 function shell(content: string, badge: string): string {
-  return `<div class="shell play-shell"><header class="topbar"><div class="brand"><h1><span aria-hidden="true">✈</span> 炸飞机</h1><p>本地双人 · 同一设备轮流对战</p></div><div class="top-actions"><span class="badge">${badge}</span><a class="text-link" href="/online.html">在线对战</a><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
+  return `<div class="shell play-shell"><header class="topbar"><div class="brand"><h1>${uiIcon('plane')}炸飞机 <small>PLANE</small></h1><p>本地双人 · 同一设备轮流对战</p></div><div class="top-actions"><span class="badge ${badge.includes('部署') ? 'badge-deployment' : ''}">${badge}</span><a class="text-link" href="/online.html">在线对战</a><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
 }
 
 function renderPlacement(): void {
@@ -125,7 +126,7 @@ function renderBattle(): void {
   const alreadyAttacked = target ? game.attacks.some((r) => r.attackerId === attacker && posKey(r.position) === posKey(target)) : false;
   const targetLabel = target ? coord(target) : '未选择';
 
-  app.innerHTML = shell(`<section class="panel game-layout">
+  app.innerHTML = shell(`<section class="panel game-layout battle-layout">
     <div class="board-wrap">
       <div class="board-title"><div><span class="eyebrow">BATTLE / 玩家 ${attacker}</span><strong>敌方战场 · 玩家 ${defender}</strong></div><span>已击落 ${destroyedCount(defender)}/3</span></div>
       ${boardHtml({ attackViewFor: attacker, interactive: !showingResult })}

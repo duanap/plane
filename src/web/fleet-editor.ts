@@ -2,6 +2,8 @@ import { planeCells, validatePlacement } from '../game/geometry.ts';
 import { directionLabel, draggedHead, gridPosition, movePlane, overlapPositions, rotatePlane, type FleetEdit } from '../game/fleet-placement.ts';
 import type { Plane, Position } from '../game/types.ts';
 import { boardFrame } from './board.ts';
+import { actionLabel } from './neon-ui.ts';
+const directionNames = { UP: '向上', RIGHT: '向右', DOWN: '向下', LEFT: '向左' };
 
 type Occupant = { index: number; head: boolean };
 
@@ -34,7 +36,7 @@ export function fleetBoard(fleet: Plane[], selectedId: string, locked = false): 
 }
 
 export function fleetTools(fleet: Plane[], selectedId: string, undoAvailable: boolean, locked = false): string {
-  return `<div class="fleet-tools"><div class="tool-heading"><span>你的编队</span><span>3 / 3 架</span></div><div class="fleet-list">${fleet.map((plane, index) => `<button class="fleet-choice fleet-${index}" data-select-plane="${index}" aria-pressed="${plane.id === selectedId}" ${locked ? 'disabled' : ''}><span class="fleet-swatch">${index + 1}</span><span>${index + 1} 号战机</span><strong>${String.fromCharCode(65 + plane.head.y)}${plane.head.x + 1} <small>${directionLabel[plane.direction]}</small></strong></button>`).join('')}</div>${locked ? '<p class="tool-hint">布局已锁定，等待对手准备。</p>' : `<div class="tool-buttons"><button class="action" id="rotate-plane">旋转选中 ↻</button><button class="action" id="undo-placement" ${undoAvailable ? '' : 'disabled'}>撤销调整</button></div><div class="tool-buttons secondary-tools"><button class="action" id="random">随机布局</button><button class="action" id="reset">恢复初始</button></div><p class="tool-hint">拖动飞机移动，点击飞机旋转。<br />也可选中飞机后用方向键移动，R 旋转。</p>`}</div>`;
+  return `<div class="fleet-tools"><div class="tool-heading"><span>你的编队</span><span>3 / 3 架</span></div><div class="fleet-list">${fleet.map((plane, index) => `<button class="fleet-choice fleet-${index}" data-select-plane="${index}" aria-pressed="${plane.id === selectedId}" ${locked ? 'disabled' : ''}><span class="fleet-swatch">${index + 1}</span><span>${index + 1} 号战机</span><strong>${String.fromCharCode(65 + plane.head.y)}${plane.head.x + 1} <small>${directionLabel[plane.direction]}<span class="fleet-direction-word">${directionNames[plane.direction]}</span></small></strong></button>`).join('')}</div>${locked ? '<p class="tool-hint">布局已锁定，等待对手准备。</p>' : `<div class="tool-buttons"><button class="action" id="rotate-plane">${actionLabel("旋转选中","rotate-plane")}</button><button class="action" id="undo-placement" ${undoAvailable ? '' : 'disabled'}>${actionLabel("撤销调整","undo-placement")}</button></div><div class="tool-buttons secondary-tools"><button class="action" id="random">${actionLabel("随机布局","random")}</button><button class="action" id="reset">${actionLabel("恢复初始","reset")}</button></div><p class="tool-hint">拖动飞机移动，点击飞机旋转。<br />也可选中飞机后用方向键移动，R 旋转。</p>`}</div>`;
 }
 
 type EditorOptions = {
