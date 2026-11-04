@@ -54,7 +54,7 @@ jobs:
             exit 1
           fi
           grep -q '"ok":true' /tmp/plane-health.json
-          for path in / /home.css /play.css /lobby.css /attack-result.css /local.html /online.html /ai.html /web/main.js /web/board.js /web/attack-result.js /web/fleet-editor.js /game/fleet-placement.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /online/room-code.js /online/attack-playback.js /web/ai.js /ai/session.js /ai/ai.js; do
+          for path in / /home.css /assets/home-skyline.png /play.css /lobby.css /attack-result.css /local.html /online.html /ai.html /web/main.js /web/board.js /web/attack-result.js /web/fleet-editor.js /game/fleet-placement.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /online/room-code.js /online/attack-playback.js /web/ai.js /ai/session.js /ai/ai.js; do
             curl -fsS "http://127.0.0.1:4173${path}" >/dev/null
           done
 
@@ -80,7 +80,7 @@ jobs:
             exit 1
           fi
           grep -q '"ok":true' /tmp/plane-container-health.json
-          for path in / /home.css /play.css /lobby.css /attack-result.css /local.html /online.html /ai.html /web/main.js /web/board.js /web/attack-result.js /web/fleet-editor.js /game/fleet-placement.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /online/room-code.js /online/attack-playback.js /web/ai.js /ai/session.js /ai/ai.js; do
+          for path in / /home.css /assets/home-skyline.png /play.css /lobby.css /attack-result.css /local.html /online.html /ai.html /web/main.js /web/board.js /web/attack-result.js /web/fleet-editor.js /game/fleet-placement.js /game/game.js /game/geometry.js /web/online.js /online/client-model.js /online/room-code.js /online/attack-playback.js /web/ai.js /ai/session.js /ai/ai.js; do
             curl -fsS "http://127.0.0.1:4174${path}" >/dev/null
           done
           for attempt in {1..20}; do
