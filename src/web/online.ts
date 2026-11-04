@@ -7,6 +7,7 @@ import { bindFleetEditor, fleetBoard, fleetTools } from './fleet-editor.ts';
 import { boardFrame } from './board.ts';
 import { AttackPlayback } from '../online/attack-playback.ts';
 import { AttackResultDelay, attackMessage, attackResultHtml } from './attack-result.ts';
+import { actionLabel, lobbyArt, uiIcon } from './neon-ui.ts';
 
 const app = document.querySelector<HTMLDivElement>('#app')!;
 
@@ -170,11 +171,11 @@ async function connectIdentity(): Promise<void> {
 }
 
 function button(label: string, id: string, className = 'action', disabled = false, type: 'button' | 'submit' = 'button'): string {
-  return `<button type="${type}" class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
+  return `<button type="${type}" class="${className}" id="${id}" ${disabled ? 'disabled' : ''}>${actionLabel(escapeHtml(label), id)}</button>`;
 }
 
 function shell(content: string, badge = '在线对战', layoutClass = ''): string {
-  return `<div class="shell play-shell ${layoutClass}"><header class="topbar"><div class="brand"><h1><span aria-hidden="true">✈</span> 炸飞机</h1><p>在线对战 · 各自布阵，实时交锋</p></div><div class="top-actions"><span class="badge">${escapeHtml(badge)}</span><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
+  return `<div class="shell play-shell ${layoutClass}"><header class="topbar"><div class="brand"><h1>${uiIcon('plane')}炸飞机 <small>PLANE</small></h1><p>在线对战 · 各自布阵，实时交锋</p></div><div class="top-actions"><span class="badge">${escapeHtml(badge)}</span><a class="text-link" href="/">返回首页</a></div></header>${content}</div>`;
 }
 
 function posKey(position: Position): string { return `${position.x}:${position.y}`; }
@@ -232,14 +233,15 @@ function roomRuleHtml(): string {
 
 function renderLanding(): void {
   if (lobbyScreen === 'JOIN') return renderJoin();
-  app.innerHTML = shell(`<section class="panel online-home">
-    <div class="online-hero"><h2>在线双人对战</h2><p class="subtle">创建一场对决，或加入朋友的房间。</p></div>
+  app.innerHTML = shell(`<section class="online-home lobby-home">
+    <div class="online-hero lobby-hero"><h2>在线双人对战</h2><p class="subtle">创建一场对决，或加入朋友的房间。</p><div class="lobby-tags"><span>${uiIcon('people')}双人对战</span><span>${uiIcon('bolt')}实时对战</span><span>${uiIcon('shield')}好友同玩</span></div></div>
+    <div class="lobby-panel">
     <div class="lobby-choice-grid">
-      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">＋</span><h3>创建房间</h3><p>生成专属的 6 位数字房间号，<br />邀请朋友加入。</p><label class="room-setting"><input id="reveal-outline" type="checkbox" ${revealDestroyedPlanes ? 'checked' : ''} ${lobbyBusy ? 'disabled' : ''} /><span>击中机头后显示完整轮廓<small>默认关闭，仅保留机头标记</small></span></label>${button(lobbyBusy ? '正在创建…' : '创建房间', 'create-room', 'action primary', lobbyBusy)}</section>
-      <section class="lobby-choice"><span class="lobby-choice-icon" aria-hidden="true">→</span><h3>加入房间</h3><p>已经有房间号？<br />输入朋友分享的号码即可加入。</p>${button('加入房间', 'open-join', 'action', lobbyBusy)}</section>
+      <section class="lobby-choice create-choice"><span class="lobby-card-tag">＋ 新建对局</span>${lobbyArt('plane')}<h3>创建房间</h3><p>生成专属的 6 位数字房间号，<br />邀请朋友加入。</p><label class="room-setting"><input id="reveal-outline" type="checkbox" ${revealDestroyedPlanes ? 'checked' : ''} ${lobbyBusy ? 'disabled' : ''} /><span>击中机头后显示完整轮廓<small>默认关闭，仅保留机头标记</small></span></label>${button(lobbyBusy ? '正在创建…' : '创建房间', 'create-room', 'action primary', lobbyBusy)}</section>
+      <section class="lobby-choice join-choice"><span class="lobby-card-tag">→ 加入对局</span>${lobbyArt('radar')}<h3>加入房间</h3><p>已经有房间号？<br />输入朋友分享的 6 位房间号即可加入。</p><label class="lobby-code-label" for="lobby-room-code"><span aria-hidden="true">#</span><input id="lobby-room-code" class="room-input" type="text" inputmode="numeric" maxlength="6" pattern="[0-9]{6}" autocomplete="off" aria-label="大厅房间号" placeholder="请输入 6 位房间号" value="${escapeHtml(joinDraft)}" ${lobbyBusy ? 'disabled' : ''} /></label>${button('加入房间', 'open-join', 'action', lobbyBusy)}</section>
     </div>
     ${message ? `<div class="notice error" role="alert">${escapeHtml(message)}</div>` : ''}
-    <a class="action-link lobby-local-link" href="/local.html">切换到本地双人</a>
+    <a class="action-link lobby-local-link" href="/local.html">${uiIcon('people')}切换到本地双人 ${uiIcon('arrow')}</a></div>
   </section>`, '在线对战', 'lobby-shell');
 
   document.querySelector<HTMLInputElement>('#reveal-outline')?.addEventListener('change', (event) => {
@@ -248,6 +250,12 @@ function renderLanding(): void {
   document.querySelector('#open-join')?.addEventListener('click', () => {
     lobbyScreen = 'JOIN'; message = ''; render();
     document.querySelector<HTMLInputElement>('#room-code')?.focus();
+  });
+  document.querySelector<HTMLInputElement>('#lobby-room-code')?.addEventListener('input', (event) => {
+    joinDraft = (event.target as HTMLInputElement).value;
+  });
+  document.querySelector('#lobby-room-code')?.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Enter') { event.preventDefault(); document.querySelector<HTMLButtonElement>('#open-join')?.click(); }
   });
   document.querySelector('#create-room')?.addEventListener('click', async () => {
     if (lobbyBusy) return;
@@ -266,7 +274,7 @@ function renderLanding(): void {
 }
 
 function renderJoin(): void {
-  app.innerHTML = shell(`<section class="panel online-home">
+  app.innerHTML = shell(`<section class="panel online-home join-home">
     <div class="online-hero"><h2>加入房间</h2><p class="subtle">输入朋友分享的 6 位数字房间号。</p></div>
     <form class="join-form" id="join-form" novalidate>
       <label for="room-code">房间号</label>
@@ -276,7 +284,7 @@ function renderJoin(): void {
       ${button(lobbyBusy ? '正在加入…' : '确认加入', 'join-room', 'action primary', lobbyBusy, 'submit')}
       ${button('返回在线大厅', 'back-lobby', 'action lobby-back', lobbyBusy)}
     </form>
-  </section>`, '加入房间', 'lobby-shell');
+  </section>`, '加入房间', 'lobby-shell join-shell');
 
   document.querySelector<HTMLInputElement>('#room-code')?.addEventListener('input', (event) => {
     joinDraft = (event.target as HTMLInputElement).value;
